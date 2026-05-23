@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { type Theme, type ScreenId, NAV_LABELS, THEME_META } from './types';
+import { GatewayProvider, useGateway } from './context/GatewayContext';
 import Overview from './screens/Overview';
 import Chat from './screens/Chat';
 import Talk from './screens/Talk';
@@ -307,9 +308,58 @@ function DefaultHeader({ collapsed, onToggle, meta }: { collapsed: boolean; onTo
   );
 }
 
+/* ── CONNECTION STATUS ───────────────────────────────────────────── */
+
+function ConnStatus() {
+  const { status, serverVersion, token, setToken } = useGateway();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const dotClass =
+    status === 'connected'   ? 'conn-dot ok'   :
+    status === 'connecting'  ? 'conn-dot warn'  :
+    status === 'auth_failed' ? 'conn-dot err'   : 'conn-dot';
+
+  const label =
+    status === 'connected'   ? `Connected · ${serverVersion ?? ':18789'}` :
+    status === 'connecting'  ? 'Connecting…'  :
+    status === 'auth_failed' ? 'Auth failed'  :
+    status === 'error'       ? 'Error'        :
+    token ? 'Disconnected' : 'No token set';
+
+  if (editing) {
+    return (
+      <div className="conn-edit">
+        <input
+          className="conn-token-input"
+          placeholder="Paste gateway token…"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          autoFocus
+          onKeyDown={e => {
+            if (e.key === 'Enter' && draft.trim()) { setToken(draft.trim()); setEditing(false); }
+            if (e.key === 'Escape') { setEditing(false); }
+          }}
+        />
+        <div className="conn-edit-btns">
+          <button className="btn" style={{fontSize:'10px',padding:'3px 8px'}} onClick={() => { if (draft.trim()) { setToken(draft.trim()); } setEditing(false); }}>Save</button>
+          <button className="btn btn-ghost" style={{fontSize:'10px',padding:'3px 8px'}} onClick={() => setEditing(false)}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="conn-status" onClick={() => { setDraft(token); setEditing(true); }} title="Click to set gateway token">
+      <div className={dotClass} />
+      <span className="conn-label">{label}</span>
+    </div>
+  );
+}
+
 /* ── APP ─────────────────────────────────────────────────────────── */
 
-export default function App() {
+function AppInner() {
   const [theme, setTheme]         = useState<Theme>('assay');
   const [screen, setScreen]       = useState<ScreenId>('overview');
   const [collapsed, setCollapsed] = useState(false);
@@ -386,10 +436,7 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div className="conn-status">
-            <div className="conn-dot" />
-            <span className="conn-label">Connected · :18789</span>
-          </div>
+          <ConnStatus />
         </div>
       </nav>
 
@@ -417,5 +464,13 @@ export default function App() {
         </div>
       </div>
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <GatewayProvider>
+      <AppInner />
+    </GatewayProvider>
   );
 }

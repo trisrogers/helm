@@ -369,12 +369,66 @@ function ConnStatus() {
 
 /* ── APP ─────────────────────────────────────────────────────────── */
 
+const SCREEN_ORDER: ScreenId[] = [
+  'overview', 'chat', 'talk', 'design',
+  'tasks', 'goals', 'orch',
+  'editor', 'skills', 'plan',
+];
+
+const SHORTCUTS: Array<{ keys: string; action: string }> = [
+  { keys: '⌘/Ctrl + 1…0', action: 'Jump to the Nth screen in the sidebar' },
+  { keys: '⌘/Ctrl + B', action: 'Toggle the sidebar' },
+  { keys: '⌘/Ctrl + .', action: 'Cycle theme (Assay → Politburo → Blizzard)' },
+  { keys: '?', action: 'Show this overlay' },
+  { keys: 'Esc', action: 'Close modals / dismiss overlays' },
+];
+
+function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--bg)', border: '1px solid var(--brd)', borderRadius: 'var(--r)',
+          width: 'min(440px, 92vw)', padding: '18px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '12px' }}>
+          <div style={{ fontFamily: 'var(--fd)', fontSize: '15px', color: 'var(--acc)' }}>Keyboard shortcuts</div>
+          <span style={{ fontSize: '10px', color: 'var(--ink2)' }}>press Esc to close</span>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+          <tbody>
+            {SHORTCUTS.map(s => (
+              <tr key={s.keys}>
+                <td style={{ padding: '6px 12px 6px 0', whiteSpace: 'nowrap', borderBottom: '1px solid var(--brd)' }}>
+                  <code style={{ fontFamily: 'var(--fm)', background: 'var(--surf)', padding: '2px 6px', borderRadius: '3px', color: 'var(--acc)' }}>
+                    {s.keys}
+                  </code>
+                </td>
+                <td style={{ padding: '6px 0', color: 'var(--ink2)', borderBottom: '1px solid var(--brd)' }}>{s.action}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function AppInner() {
   const [theme, setTheme]         = useState<Theme>('assay');
   const [screen, setScreen]       = useState<ScreenId>('overview');
   const [collapsed, setCollapsed] = useState(false);
   const [clock, setClock]         = useState('');
   const [storeTick, setStoreTick] = useState(0);
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -390,6 +444,55 @@ function AppInner() {
   }, []);
 
   useEffect(() => onStoreChange(() => setStoreTick(n => n + 1)), []);
+
+  // Global keyboard shortcuts. Skip when the user is typing in a field.
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (el.isContentEditable) return true;
+      // CodeMirror editor surface
+      if (el.closest('.cm-editor')) return true;
+      return false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // Esc always works — even from inside an input — for closing overlays
+      if (e.key === 'Escape' && showShortcuts) {
+        setShowShortcuts(false);
+        return;
+      }
+      if (isEditable(e.target)) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && /^[0-9]$/.test(e.key)) {
+        e.preventDefault();
+        // 1..9 → indices 0..8, 0 → index 9
+        const idx = e.key === '0' ? 9 : parseInt(e.key, 10) - 1;
+        const next = SCREEN_ORDER[idx];
+        if (next) setScreen(next);
+        return;
+      }
+      if (mod && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault();
+        setCollapsed(c => !c);
+        return;
+      }
+      if (mod && e.key === '.') {
+        e.preventDefault();
+        setTheme(t => t === 'assay' ? 'politburo' : t === 'politburo' ? 'blizzard' : 'assay');
+        return;
+      }
+      // Accept `?` directly (US layouts) or Shift+/ (which fires as key='/'
+      // on some platforms / synthetic events).
+      const isQuestion = !mod && (e.key === '?' || (e.shiftKey && e.key === '/'));
+      if (isQuestion) {
+        e.preventDefault();
+        setShowShortcuts(s => !s);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showShortcuts]);
 
   const navSections = useMemo(() => {
     // Tick is a dep so the count re-reads on store changes
@@ -484,6 +587,8 @@ function AppInner() {
           {screen === 'plan'     && <Plan />}
         </div>
       </div>
+
+      {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
     </>
   );
 }

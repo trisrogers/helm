@@ -89,6 +89,12 @@ function NewGoalModal({ onClose, onCreate }: { onClose: () => void; onCreate: (g
   const [description, setDescription] = useState('');
   const [targetDate, setTargetDate] = useState('');
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
     <div
       onClick={onClose}

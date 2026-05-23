@@ -1,4 +1,10 @@
-export default function Chat() {
+import { type Theme } from '../types';
+
+interface ChatProps {
+  theme: Theme;
+}
+
+export default function Chat({ theme }: ChatProps) {
   return (
     <div id="screen-chat" className="screen">
       <div className="chat-sessions">
@@ -88,6 +94,13 @@ app.post('/webhook', express.raw({type:'application/json'}), (req, res) => {
             <select><option>Auto</option><option>Enabled</option><option>Disabled</option></select>
             <button className="btn btn-ghost" style={{marginLeft:'auto',padding:'3px 8px',fontSize:'10px'}}>⊕ Attach</button>
             <button className="btn" style={{padding:'3px 8px',fontSize:'10px'}}>✕ Abort</button>
+          </div>
+          {/* Survival stats - visible only in blizzard theme via CSS */}
+          <div className="survival-stats">
+            <div className="surv-stat"><div className="surv-dot h"></div><div className="surv-bar"><div className="surv-fill h"></div></div></div>
+            <div className="surv-stat"><div className="surv-dot w"></div><div className="surv-bar"><div className="surv-fill w"></div></div></div>
+            <div className="surv-stat"><div className="surv-dot c"></div><div className="surv-bar"><div className="surv-fill c"></div></div></div>
+            <div className="surv-stat"><div className="surv-dot f"></div><div className="surv-bar"><div className="surv-fill f"></div></div></div>
           </div>
           <div className="composer-row">
             <textarea placeholder="Message Deltron… (Enter to send, Shift+Enter for newline)" />

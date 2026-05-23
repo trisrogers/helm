@@ -1056,3 +1056,87 @@ input:focus, textarea:focus { border-color: var(--acc); }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--brd); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--acc); }
+
+/* ── RESPONSIVE — tablet / narrow desktop ────────────────────────── */
+@media (max-width: 1100px) {
+  /* Force the icons-only sidebar regardless of the user-toggled state */
+  #sidebar { width: 52px; min-width: 52px; }
+  #sidebar .nav-label,
+  #sidebar .nav-section,
+  #sidebar .theme-selector,
+  #sidebar .conn-label,
+  #sidebar .logo-text,
+  #sidebar .pol-helm,
+  #sidebar .pol-sub,
+  #sidebar .assay-name,
+  #sidebar .assay-sub { display: none; }
+  #sidebar .pol-red { height: 52px; }
+  #sidebar .assay-logo { height: 60px; }
+  #sidebar .sidebar-footer { padding: 12px 6px; }
+
+  /* Drop the assay decorative frame inset (it sits outside the viewport) */
+  .assay-border { display: none; }
+
+  /* Side panels in Chat / Editor / Skills / Goals get tight */
+  .chat-sessions { width: 200px; }
+  .chat-info { width: 220px; }
+  .editor-tree { width: 160px; }
+  .editor-ctx { width: 220px; }
+  .goals-list { width: 240px; }
+  .skills-list { width: 220px; }
+
+  .clawhub-grid { grid-template-columns: repeat(2, 1fr); }
+  .agent-grid { grid-template-columns: repeat(2, 1fr); }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .mid-grid, .bottom-grid { grid-template-columns: 1fr; }
+}
+
+/* ── RESPONSIVE — tablet portrait / phone landscape ──────────────── */
+@media (max-width: 820px) {
+  /* Hide the contextual side rails so the main pane gets the room */
+  .chat-info,
+  .editor-ctx { display: none; }
+
+  /* Chat thread + composer take the full pane; sessions list narrows */
+  .chat-sessions { width: 160px; }
+
+  /* Goals + Skills detail panes stack below their lists */
+  #screen-goals,
+  #screen-skills .skills-content { flex-direction: column; }
+  .goals-list,
+  .skills-list { width: 100%; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--brd); }
+  .skill-detail,
+  .goal-detail { flex: 1; }
+
+  /* Editor: drop the file tree onto a narrow top strip */
+  #screen-editor { flex-direction: column; }
+  .editor-tree { width: 100%; max-height: 120px; overflow-y: auto; border-right: none; border-bottom: 1px solid var(--brd); display: flex; flex-wrap: wrap; gap: 2px; padding: 6px; }
+  .editor-tree .tree-section { width: 100%; }
+  .editor-tree .tree-item { white-space: nowrap; }
+
+  /* Design canvas stacks editor over preview */
+  #screen-design { flex-direction: column; }
+  .design-left,
+  .design-right { width: 100%; flex: 1; }
+
+  /* Overview cards compress */
+  .stat-grid { grid-template-columns: 1fr 1fr; }
+  .clawhub-grid,
+  .agent-grid { grid-template-columns: 1fr; }
+}
+
+/* ── RESPONSIVE — phone portrait ─────────────────────────────────── */
+@media (max-width: 560px) {
+  #topbar { font-size: 10px; padding: 8px 10px; }
+  .topbar-meta { gap: 8px; font-size: 10px; }
+  .topbar-meta span:first-child { display: none; }
+
+  .chat-sessions { width: 130px; }
+  .stat-grid { grid-template-columns: 1fr; }
+
+  /* Tighten kanban columns so two fit in view; user scrolls for the rest */
+  .k-col { min-width: 200px; }
+
+  .tasks-toolbar { flex-wrap: wrap; }
+  .tasks-toolbar select { font-size: 11px; padding: 4px 6px; }
+}

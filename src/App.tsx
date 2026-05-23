@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { type Theme, type ScreenId, NAV_LABELS, THEME_META } from './types';
 import { GatewayProvider, useGateway } from './context/GatewayContext';
+import { loadTasks, onStoreChange } from './lib/helm-store';
 import Overview from './screens/Overview';
 import Chat from './screens/Chat';
 import Talk from './screens/Talk';
@@ -12,36 +13,45 @@ import Editor from './screens/Editor';
 import Skills from './screens/Skills';
 import Plan from './screens/Plan';
 
-const NAV_SECTIONS: { label: string; items: { id: ScreenId; icon: string; badge?: number }[] }[] = [
-  {
-    label: 'Navigation',
-    items: [
-      { id: 'overview', icon: '⊡' },
-      { id: 'chat',     icon: '◻', badge: 3 },
-      { id: 'talk',     icon: '◉' },
-      { id: 'design',   icon: '⬚' },
-    ],
-  },
-  {
-    label: 'Operations',
-    items: [
-      { id: 'tasks', icon: '☑', badge: 2 },
-      { id: 'goals', icon: '◎' },
-      { id: 'orch',  icon: '⊹' },
-    ],
-  },
-  {
-    label: 'System',
-    items: [
-      { id: 'editor', icon: '⬜' },
-      { id: 'skills', icon: '⬡' },
-    ],
-  },
-  {
-    label: 'Spec',
-    items: [{ id: 'plan', icon: '📋' }],
-  },
-];
+type NavItem = { id: ScreenId; icon: string; badge?: number };
+type NavSection = { label: string; items: NavItem[] };
+
+function buildNavSections(badges: Partial<Record<ScreenId, number>>): NavSection[] {
+  const withBadge = (id: ScreenId, icon: string): NavItem => {
+    const badge = badges[id];
+    return badge ? { id, icon, badge } : { id, icon };
+  };
+  return [
+    {
+      label: 'Navigation',
+      items: [
+        withBadge('overview', '⊡'),
+        withBadge('chat', '◻'),
+        withBadge('talk', '◉'),
+        withBadge('design', '⬚'),
+      ],
+    },
+    {
+      label: 'Operations',
+      items: [
+        withBadge('tasks', '☑'),
+        withBadge('goals', '◎'),
+        withBadge('orch', '⊹'),
+      ],
+    },
+    {
+      label: 'System',
+      items: [
+        withBadge('editor', '⬜'),
+        withBadge('skills', '⬡'),
+      ],
+    },
+    {
+      label: 'Spec',
+      items: [withBadge('plan', '📋')],
+    },
+  ];
+}
 
 /* ── SVG COMPONENTS ──────────────────────────────────────────────── */
 
@@ -364,6 +374,7 @@ function AppInner() {
   const [screen, setScreen]       = useState<ScreenId>('overview');
   const [collapsed, setCollapsed] = useState(false);
   const [clock, setClock]         = useState('');
+  const [storeTick, setStoreTick] = useState(0);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -377,6 +388,16 @@ function AppInner() {
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => onStoreChange(() => setStoreTick(n => n + 1)), []);
+
+  const navSections = useMemo(() => {
+    // Tick is a dep so the count re-reads on store changes
+    void storeTick;
+    const tasks = loadTasks();
+    const reviewCount = tasks.filter(t => t.status === 'review').length;
+    return buildNavSections({ tasks: reviewCount || undefined });
+  }, [storeTick]);
 
   const labels = NAV_LABELS[theme];
   const meta   = THEME_META[theme];
@@ -402,7 +423,7 @@ function AppInner() {
         }
 
         <div className="sidebar-nav">
-          {NAV_SECTIONS.map(({ label, items }) => (
+          {navSections.map(({ label, items }) => (
             <div key={label}>
               <div className="nav-section">{label}</div>
               {items.map(item => (

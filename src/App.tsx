@@ -296,7 +296,7 @@ function AssayHeader({ collapsed, onToggle }: { collapsed: boolean; onToggle: ()
   );
 }
 
-function DefaultHeader({ collapsed, onToggle, meta }: { collapsed: boolean; onToggle: () => void; meta: { name: string; sub: string } }) {
+function DefaultHeader({ collapsed: _collapsed, onToggle, meta }: { collapsed: boolean; onToggle: () => void; meta: { name: string; sub: string } }) {
   return (
     <div className="logo" onClick={onToggle}>
       <div className="logo-mark">H</div>

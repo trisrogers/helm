@@ -46,7 +46,11 @@ export class OpenClawClient {
   snapshot: GatewaySnapshot | null = null;
   serverVersion: string | null = null;
 
-  constructor(private readonly token: string) {}
+  private readonly token: string;
+
+  constructor(token: string) {
+    this.token = token;
+  }
 
   connect() {
     if (this.ws || this.gone) return;

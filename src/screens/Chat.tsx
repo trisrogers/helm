@@ -1,101 +1,375 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Theme } from '../types';
+import { useGateway } from '../context/GatewayContext';
 
 interface ChatProps {
   theme: Theme;
 }
 
-export default function Chat({ theme }: ChatProps) {
+interface SessionRow {
+  key: string;
+  status?: 'running' | 'done' | 'failed' | 'killed' | 'timeout';
+  model?: string;
+  lastMessagePreview?: string;
+  displayName?: string;
+  derivedTitle?: string;
+  updatedAt?: number | null;
+  totalTokens?: number;
+  contextTokens?: number;
+  estimatedCostUsd?: number;
+  channel?: string;
+  lastChannel?: string;
+  agentRuntime?: { agentId?: string };
+  kind?: string;
+  hasActiveRun?: boolean;
+  thinkingLevel?: string;
+}
+
+interface AgentRow {
+  id: string;
+  name?: string;
+  identity?: { name?: string; emoji?: string };
+}
+
+interface RawMessage {
+  role?: string;
+  content?: unknown;
+  text?: string;
+  timestamp?: string | number;
+  _openclaw?: { id?: string; seq?: number };
+}
+
+interface DisplayMsg {
+  id: string;
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  text: string;
+  ts?: number;
+  streaming?: boolean;
+}
+
+/* ── helpers ──────────────────────────────────────────────────── */
+
+function extractText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block === 'string') { parts.push(block); continue; }
+      if (block && typeof block === 'object') {
+        const b = block as Record<string, unknown>;
+        if (typeof b.text === 'string') parts.push(b.text);
+        else if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
+      }
+    }
+    return parts.join('');
+  }
+  return '';
+}
+
+function normalizeRole(r: unknown): DisplayMsg['role'] {
+  const s = typeof r === 'string' ? r.toLowerCase() : '';
+  if (s === 'user' || s === 'human') return 'user';
+  if (s === 'assistant' || s === 'model') return 'assistant';
+  if (s === 'tool' || s === 'tool_use' || s === 'tool_result') return 'tool';
+  return 'system';
+}
+
+function projectMsg(raw: RawMessage, fallbackKey: string): DisplayMsg | null {
+  const role = normalizeRole(raw.role);
+  const text = (raw.text ?? extractText(raw.content)).trim();
+  if (!text) return null;
+  if (role === 'tool' || role === 'system') return null;
+  const seq = raw._openclaw?.seq;
+  const id = raw._openclaw?.id ?? `${fallbackKey}-${seq ?? Math.random().toString(36).slice(2, 8)}`;
+  const tsRaw = raw.timestamp;
+  const ts =
+    typeof tsRaw === 'number' ? tsRaw :
+    typeof tsRaw === 'string' ? Date.parse(tsRaw) || undefined :
+    undefined;
+  return { id, role, text, ts };
+}
+
+function fmtTime(ts?: number) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtRelative(ms: number | null | undefined): string {
+  if (!ms) return '—';
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function channelIcon(ch?: string): string {
+  if (!ch) return '⚡';
+  const lc = ch.toLowerCase();
+  if (lc.includes('telegram')) return '📱';
+  if (lc.includes('slack')) return '💬';
+  if (lc.includes('email')) return '✉';
+  if (lc.includes('direct') || lc.includes('webchat') || lc.includes('ui')) return '⚡';
+  return '◇';
+}
+
+/* ── Chat ─────────────────────────────────────────────────────── */
+
+export default function Chat({ theme: _theme }: ChatProps) {
+  const { client, status } = useGateway();
+  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+  const [agents, setAgents] = useState<AgentRow[]>([]);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [messages, setMessages] = useState<DisplayMsg[]>([]);
+  const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [composer, setComposer] = useState('');
+  const [search, setSearch] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+
+  const refreshSessions = useCallback(async () => {
+    if (!client || status !== 'connected') return;
+    try {
+      const result = await client.call<{ sessions: SessionRow[] }>('sessions.list');
+      const rows = result.sessions ?? [];
+      rows.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      setSessions(rows);
+      setActiveKey(prev => prev ?? rows[0]?.key ?? null);
+    } catch (e) {
+      console.warn('[chat] sessions.list failed', e);
+    }
+  }, [client, status]);
+
+  useEffect(() => {
+    if (!client || status !== 'connected') return;
+    refreshSessions();
+    client.call<{ agents: AgentRow[] }>('agents.list').then(r => setAgents(r.agents ?? [])).catch(() => {});
+    const unsubs = [
+      client.on('sessions.changed', () => { refreshSessions(); }),
+    ];
+    return () => unsubs.forEach(u => u());
+  }, [client, status, refreshSessions]);
+
+  // Load history + subscribe to messages when active session changes
+  useEffect(() => {
+    if (!client || status !== 'connected' || !activeKey) return;
+    let cancelled = false;
+    setLoadingMsgs(true);
+    setMessages([]);
+
+    (async () => {
+      try {
+        const res = await client.call<{ messages: RawMessage[] }>('sessions.get', { key: activeKey, limit: 200 });
+        if (cancelled) return;
+        const msgs = (res.messages ?? [])
+          .map(m => projectMsg(m, activeKey))
+          .filter((m): m is DisplayMsg => m !== null);
+        setMessages(msgs);
+      } catch (e) {
+        console.warn('[chat] sessions.get failed', e);
+      } finally {
+        if (!cancelled) setLoadingMsgs(false);
+      }
+
+      try {
+        await client.call('sessions.messages.subscribe', { key: activeKey });
+      } catch (e) {
+        console.warn('[chat] subscribe failed', e);
+      }
+    })();
+
+    const offMsg = client.on('session.message', (payload) => {
+      const p = payload as { sessionKey?: string; message?: RawMessage };
+      if (!p || p.sessionKey !== activeKey || !p.message) return;
+      const projected = projectMsg(p.message, activeKey);
+      if (!projected) return;
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === projected.id);
+        if (idx >= 0) {
+          const next = prev.slice();
+          next[idx] = projected;
+          return next;
+        }
+        return [...prev, projected];
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      offMsg();
+      client.call('sessions.messages.unsubscribe', { key: activeKey }).catch(() => {});
+    };
+  }, [client, status, activeKey]);
+
+  // Auto-scroll thread on new messages
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const handleSend = async () => {
+    const text = composer.trim();
+    if (!text || !client || !activeKey || sending) return;
+    setSending(true);
+    setErrorMsg(null);
+    try {
+      await client.call('sessions.send', { key: activeKey, message: text });
+      setComposer('');
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'send failed');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleAbort = async () => {
+    if (!client || !activeKey) return;
+    try { await client.call('sessions.abort', { key: activeKey }); } catch { /* ignore */ }
+  };
+
+  const handleNewSession = async () => {
+    if (!client || agents.length === 0) return;
+    try {
+      const res = await client.call<{ key?: string; sessionKey?: string }>('sessions.create', {
+        agentId: agents[0].id,
+      });
+      const newKey = res.key ?? res.sessionKey;
+      if (newKey) setActiveKey(newKey);
+      refreshSessions();
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'create failed');
+    }
+  };
+
+  const filtered = useMemo(() => {
+    const list = sessions ?? [];
+    if (!search.trim()) return list;
+    const q = search.trim().toLowerCase();
+    return list.filter(s =>
+      (s.displayName ?? '').toLowerCase().includes(q) ||
+      (s.derivedTitle ?? '').toLowerCase().includes(q) ||
+      (s.lastMessagePreview ?? '').toLowerCase().includes(q) ||
+      s.key.toLowerCase().includes(q),
+    );
+  }, [sessions, search]);
+
+  const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
+  const contextUsed = active?.contextTokens ?? active?.totalTokens ?? 0;
+  const contextMax = 200_000;
+  const ctxPct = Math.min(100, (contextUsed / contextMax) * 100);
+
+  /* ── render ──────────────────────────────────────────────────── */
+
   return (
     <div id="screen-chat" className="screen">
       <div className="chat-sessions">
         <div className="chat-sessions-head">
-          <input placeholder="Search sessions…" style={{flex:1}} />
-          <button className="btn" style={{padding:'5px 8px',fontSize:'10px'}}>+ New</button>
+          <input
+            placeholder="Search sessions…"
+            style={{ flex: 1 }}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <button
+            className="btn"
+            style={{ padding: '5px 8px', fontSize: '10px' }}
+            onClick={handleNewSession}
+            disabled={status !== 'connected' || agents.length === 0}
+          >+ New</button>
         </div>
         <div className="session-list">
-          <div className="session-item active">
-            <div className="session-title">Payment API Debug</div>
-            <div className="session-preview">The 422 error is coming from the webhook validator…</div>
-            <div className="session-meta"><span className="chan-badge">⚡ Direct</span><span>2m ago</span></div>
-          </div>
-          <div className="session-item">
-            <div className="session-title">Weekly Standup Draft</div>
-            <div className="session-preview">Here's a summary of this week's progress…</div>
-            <div className="session-meta"><span className="chan-badge">📱 Telegram</span><span>1h ago</span></div>
-          </div>
-          <div className="session-item">
-            <div className="session-title">Helm Architecture</div>
-            <div className="session-preview">I'd recommend using Zustand for state management…</div>
-            <div className="session-meta"><span className="chan-badge">⚡ Direct</span><span>3h ago</span></div>
-          </div>
-          <div className="session-item">
-            <div className="session-title">Marketing Copy v3</div>
-            <div className="session-preview">Here's the revised landing page copy…</div>
-            <div className="session-meta"><span className="chan-badge">💬 Slack</span><span>Yesterday</span></div>
-          </div>
-          <div className="session-item">
-            <div className="session-title">Research: LLM Routing</div>
-            <div className="session-preview">The key papers on mixture-of-experts routing are…</div>
-            <div className="session-meta"><span className="chan-badge">⚡ Direct</span><span>2d ago</span></div>
-          </div>
+          {status !== 'connected' && (
+            <div style={{ padding: '12px', fontSize: '11px', color: 'var(--ink2)' }}>
+              {status === 'connecting' ? 'Connecting…' : 'Not connected to gateway'}
+            </div>
+          )}
+          {status === 'connected' && sessions == null && (
+            <div style={{ padding: '12px', fontSize: '11px', color: 'var(--ink2)' }}>Loading sessions…</div>
+          )}
+          {status === 'connected' && sessions != null && filtered.length === 0 && (
+            <div style={{ padding: '12px', fontSize: '11px', color: 'var(--ink2)' }}>
+              {search ? 'No matches' : 'No sessions yet'}
+            </div>
+          )}
+          {filtered.map(s => {
+            const ch = s.lastChannel ?? s.channel ?? 'Direct';
+            return (
+              <div
+                key={s.key}
+                className={`session-item ${s.key === activeKey ? 'active' : ''}`}
+                onClick={() => setActiveKey(s.key)}
+              >
+                <div className="session-title">
+                  {s.displayName ?? s.derivedTitle ?? s.key}
+                </div>
+                {s.lastMessagePreview && (
+                  <div className="session-preview">{s.lastMessagePreview}</div>
+                )}
+                <div className="session-meta">
+                  <span className="chan-badge">{channelIcon(ch)} {ch}</span>
+                  <span>{fmtRelative(s.updatedAt)}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
       <div className="chat-main">
-        <div className="chat-thread">
-          <div className="msg user">
-            <div className="msg-avatar">T</div>
-            <div>
-              <div className="msg-body">I'm getting a 422 on the payment webhook. The request body looks fine but Stripe keeps rejecting it. Here's the error: <code>webhook signature verification failed</code></div>
-              <div className="msg-time">09:34</div>
+        <div className="chat-thread" ref={threadRef}>
+          {!activeKey && status === 'connected' && (
+            <div style={{ color: 'var(--ink2)', fontSize: '12px', padding: '24px' }}>
+              Select or create a session to begin.
             </div>
-          </div>
-          <div className="msg">
-            <div className="msg-avatar">D</div>
-            <div>
-              <details className="thinking-block">
-                <summary>▸ Thinking (3.2s)</summary>
-                <div style={{marginTop:'6px'}}>Webhook signature failures typically indicate a timing issue or the raw body is being parsed before verification…</div>
-              </details>
-              <div className="msg-body">
-                The 422 with <code>webhook signature verification failed</code> almost always means Stripe is checking the signature against a <em>parsed</em> body instead of the raw request bytes. The fix is to use the raw buffer before any JSON parsing middleware:
-                <pre>{`// Express — this must come BEFORE body-parser
-app.post('/webhook', express.raw({type:'application/json'}), (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  const event = stripe.webhooks.constructEvent(
-    req.body, sig, process.env.STRIPE_WEBHOOK_SECRET
-  );
-});`}</pre>
-                Also double-check your <code>STRIPE_WEBHOOK_SECRET</code> is the endpoint secret (starts with <code>whsec_</code>), not the API key.
+          )}
+          {activeKey && loadingMsgs && (
+            <div style={{ color: 'var(--ink2)', fontSize: '11px' }}>Loading history…</div>
+          )}
+          {activeKey && !loadingMsgs && messages.length === 0 && (
+            <div style={{ color: 'var(--ink2)', fontSize: '11px' }}>No messages yet — send the first.</div>
+          )}
+          {messages.map(m => (
+            <div key={m.id} className={`msg ${m.role === 'user' ? 'user' : ''}`}>
+              <div className="msg-avatar">{m.role === 'user' ? 'U' : 'D'}</div>
+              <div>
+                <div className="msg-body" style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                {m.ts && <div className="msg-time">{fmtTime(m.ts)}</div>}
               </div>
-              <div className="msg-time">09:35</div>
             </div>
-          </div>
-          <div className="msg user">
-            <div className="msg-avatar">T</div>
-            <div>
-              <div className="msg-body">That was it! The body-parser was running first. Working now. Can you add a test for this case?</div>
-              <div className="msg-time">09:37</div>
+          ))}
+          {active?.hasActiveRun && (
+            <div className="msg">
+              <div className="msg-avatar">D</div>
+              <div>
+                <div className="msg-body"><span className="streaming-cursor" /></div>
+                <div className="msg-time">streaming…</div>
+              </div>
             </div>
-          </div>
-          <div className="msg">
-            <div className="msg-avatar">D</div>
-            <div>
-              <div className="msg-body">Absolutely. Here's a Jest test that covers the signature verification:<span className="streaming-cursor" /></div>
-              <div className="msg-time">09:38 · streaming…</div>
-            </div>
-          </div>
+          )}
         </div>
+
         <div className="composer">
           <div className="composer-top">
             <span>Model:</span>
-            <select><option>claude-sonnet-4-6</option><option>claude-opus-4-7</option><option>claude-haiku-4-5</option></select>
-            <span style={{marginLeft:'8px'}}>Thinking:</span>
-            <select><option>Auto</option><option>Enabled</option><option>Disabled</option></select>
-            <button className="btn btn-ghost" style={{marginLeft:'auto',padding:'3px 8px',fontSize:'10px'}}>⊕ Attach</button>
-            <button className="btn" style={{padding:'3px 8px',fontSize:'10px'}}>✕ Abort</button>
+            <span style={{ color: 'var(--acc)', fontFamily: 'var(--fm)' }}>{active?.model ?? '—'}</span>
+            {active?.thinkingLevel != null && (
+              <>
+                <span style={{ marginLeft: '8px' }}>Thinking:</span>
+                <span style={{ color: 'var(--acc)' }}>{String(active.thinkingLevel)}</span>
+              </>
+            )}
+            {errorMsg && (
+              <span style={{ marginLeft: '8px', color: 'var(--err)' }}>{errorMsg}</span>
+            )}
+            <button
+              className="btn"
+              style={{ marginLeft: 'auto', padding: '3px 8px', fontSize: '10px' }}
+              onClick={handleAbort}
+              disabled={!active?.hasActiveRun}
+            >✕ Abort</button>
           </div>
-          {/* Survival stats - visible only in blizzard theme via CSS */}
           <div className="survival-stats">
             <div className="surv-stat"><div className="surv-dot h"></div><div className="surv-bar"><div className="surv-fill h"></div></div></div>
             <div className="surv-stat"><div className="surv-dot w"></div><div className="surv-bar"><div className="surv-fill w"></div></div></div>
@@ -103,29 +377,75 @@ app.post('/webhook', express.raw({type:'application/json'}), (req, res) => {
             <div className="surv-stat"><div className="surv-dot f"></div><div className="surv-bar"><div className="surv-fill f"></div></div></div>
           </div>
           <div className="composer-row">
-            <textarea placeholder="Message Deltron… (Enter to send, Shift+Enter for newline)" />
-            <button className="btn" style={{alignSelf:'flex-end',padding:'8px 14px'}}>Send</button>
+            <textarea
+              placeholder={activeKey ? 'Message Deltron… (Enter to send, Shift+Enter for newline)' : 'Select a session to chat…'}
+              value={composer}
+              onChange={e => setComposer(e.target.value)}
+              disabled={!activeKey || sending}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+            />
+            <button
+              className="btn"
+              style={{ alignSelf: 'flex-end', padding: '8px 14px' }}
+              onClick={handleSend}
+              disabled={!composer.trim() || !activeKey || sending}
+            >{sending ? 'Sending…' : 'Send'}</button>
           </div>
         </div>
       </div>
 
       <div className="chat-info">
         <div className="card-title">Session Info</div>
-        <div className="info-row"><span className="info-label">Session</span><span className="info-val">payment-api-debug</span></div>
-        <div className="info-row"><span className="info-label">Agent</span><span className="info-val">Deltron Gateway</span></div>
-        <div className="info-row"><span className="info-label">Model</span><span className="info-val">claude-sonnet-4-6</span></div>
-        <div className="info-row"><span className="info-label">Channel</span><span className="info-val">Direct</span></div>
-        <div className="info-row"><span className="info-label">Created</span><span className="info-val">2026-05-23 09:30</span></div>
-        <div style={{marginTop:'4px'}}>
-          <div className="card-title">Context Used</div>
-          <div className="token-bar"><div className="token-fill" /></div>
-          <div style={{display:'flex',justifyContent:'space-between',fontSize:'10px',color:'var(--ink2)',marginTop:'3px'}}><span>12,450 / 200,000</span><span>6.2%</span></div>
-        </div>
-        <div style={{marginTop:'4px',display:'flex',flexDirection:'column',gap:'6px'}}>
-          <button className="btn btn-ghost" style={{width:'100%'}}>Compact Context</button>
-          <button className="btn btn-ghost" style={{width:'100%'}}>Reset Session</button>
-          <button className="btn btn-ghost" style={{width:'100%',color:'var(--err)',borderColor:'var(--err)'}}>Delete Session</button>
-        </div>
+        {!active && (
+          <div style={{ fontSize: '11px', color: 'var(--ink2)' }}>No session selected.</div>
+        )}
+        {active && (
+          <>
+            <div className="info-row"><span className="info-label">Session</span><span className="info-val" title={active.key} style={{ maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{active.key}</span></div>
+            <div className="info-row"><span className="info-label">Agent</span><span className="info-val">{active.agentRuntime?.agentId ?? '—'}</span></div>
+            <div className="info-row"><span className="info-label">Model</span><span className="info-val">{active.model ?? '—'}</span></div>
+            <div className="info-row"><span className="info-label">Channel</span><span className="info-val">{active.lastChannel ?? active.channel ?? 'Direct'}</span></div>
+            <div className="info-row"><span className="info-label">Status</span><span className="info-val">{active.status ?? '—'}</span></div>
+            <div className="info-row"><span className="info-label">Updated</span><span className="info-val">{fmtRelative(active.updatedAt)}</span></div>
+            <div style={{ marginTop: '4px' }}>
+              <div className="card-title">Context Used</div>
+              <div className="token-bar"><div className="token-fill" style={{ width: `${ctxPct}%` }} /></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--ink2)', marginTop: '3px' }}>
+                <span>{contextUsed.toLocaleString()} / {contextMax.toLocaleString()}</span>
+                <span>{ctxPct.toFixed(1)}%</span>
+              </div>
+            </div>
+            <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <button
+                className="btn btn-ghost"
+                style={{ width: '100%' }}
+                onClick={() => client?.call('sessions.compact', { key: active.key }).catch(() => {})}
+              >Compact Context</button>
+              <button
+                className="btn btn-ghost"
+                style={{ width: '100%' }}
+                onClick={() => client?.call('sessions.reset', { key: active.key }).then(() => setMessages([])).catch(() => {})}
+              >Reset Session</button>
+              <button
+                className="btn btn-ghost"
+                style={{ width: '100%', color: 'var(--err)', borderColor: 'var(--err)' }}
+                onClick={async () => {
+                  if (!client) return;
+                  try {
+                    await client.call('sessions.delete', { key: active.key });
+                    setActiveKey(null);
+                    refreshSessions();
+                  } catch { /* ignore */ }
+                }}
+              >Delete Session</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

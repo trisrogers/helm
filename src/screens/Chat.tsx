@@ -153,6 +153,19 @@ function channelIcon(ch?: string): string {
   return '◇';
 }
 
+/** Normalise raw channel strings so the filter chips have a stable set
+ *  rather than one chip per casing/variant ("Direct" / "direct" / "ui"). */
+function normalizeChannel(ch: string | undefined): string {
+  if (!ch) return 'Direct';
+  const lc = ch.toLowerCase();
+  if (lc.includes('telegram')) return 'Telegram';
+  if (lc.includes('slack')) return 'Slack';
+  if (lc.includes('email')) return 'Email';
+  if (lc.includes('webchat')) return 'WebChat';
+  if (lc.includes('direct') || lc.includes('ui')) return 'Direct';
+  return ch;
+}
+
 /* ── Chat ─────────────────────────────────────────────────────── */
 
 const CHAT_ACTIVE_KEY_STORAGE = 'helm:chat:activeKey';
@@ -189,6 +202,8 @@ export default function Chat({ theme: _theme }: ChatProps) {
   const [sending, setSending] = useState(false);
   const [composer, setComposer] = useState('');
   const [search, setSearch] = useState('');
+  const [agentFilter, setAgentFilter] = useState<string>('all');
+  const [channelFilter, setChannelFilter] = useState<string>('all');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   /** Run id of the most recent send that we're still waiting on. Drives the
    *  "thinking…" placeholder while the gateway hasn't emitted any text yet.
@@ -429,22 +444,57 @@ export default function Chat({ theme: _theme }: ChatProps) {
     }
   };
 
+  // Filter chips
+  const agentOptions = useMemo(() => {
+    const s = new Set<string>();
+    (sessions ?? []).forEach(row => {
+      const id = row.agentRuntime?.agentId;
+      if (id) s.add(id);
+    });
+    return [...s].sort();
+  }, [sessions]);
+
+  const channelOptions = useMemo(() => {
+    const s = new Set<string>();
+    (sessions ?? []).forEach(row => {
+      const ch = row.lastChannel ?? row.channel;
+      if (ch) s.add(normalizeChannel(ch));
+    });
+    return [...s].sort();
+  }, [sessions]);
+
   const filtered = useMemo(() => {
     const list = sessions ?? [];
-    if (!search.trim()) return list;
-    const q = search.trim().toLowerCase();
-    return list.filter(s =>
-      (s.displayName ?? '').toLowerCase().includes(q) ||
-      (s.derivedTitle ?? '').toLowerCase().includes(q) ||
-      (s.lastMessagePreview ?? '').toLowerCase().includes(q) ||
-      s.key.toLowerCase().includes(q),
-    );
-  }, [sessions, search]);
+    return list.filter(s => {
+      if (agentFilter !== 'all' && (s.agentRuntime?.agentId ?? '') !== agentFilter) return false;
+      if (channelFilter !== 'all' && normalizeChannel(s.lastChannel ?? s.channel) !== channelFilter) return false;
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        if (!(
+          (s.displayName ?? '').toLowerCase().includes(q) ||
+          (s.derivedTitle ?? '').toLowerCase().includes(q) ||
+          (s.lastMessagePreview ?? '').toLowerCase().includes(q) ||
+          s.key.toLowerCase().includes(q)
+        )) return false;
+      }
+      return true;
+    });
+  }, [sessions, search, agentFilter, channelFilter]);
 
   const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
-  const contextUsed = active?.contextTokens ?? active?.totalTokens ?? 0;
+
+  // Context-usage bar — prefer the gateway's contextTokens, fall back to
+  // totalTokens, fall back to a rough char/4 estimate over the visible
+  // thread so the bar moves with the live conversation even when the
+  // gateway hasn't refreshed sessionRow stats yet.
+  const charEstimateTokens = useMemo(
+    () => Math.ceil(messages.reduce((n, m) => n + m.text.length, 0) / 4),
+    [messages],
+  );
+  const contextUsed = active?.contextTokens ?? active?.totalTokens ?? charEstimateTokens;
   const contextMax = 200_000;
   const ctxPct = Math.min(100, (contextUsed / contextMax) * 100);
+  const ctxIsEstimate = (active?.contextTokens ?? active?.totalTokens) == null;
 
   /* ── render ──────────────────────────────────────────────────── */
 
@@ -465,6 +515,42 @@ export default function Chat({ theme: _theme }: ChatProps) {
             disabled={status !== 'connected' || agents.length === 0}
           >+ New</button>
         </div>
+        {(agentOptions.length > 1 || channelOptions.length > 1) && (
+          <div className="session-filters">
+            {agentOptions.length > 1 && (
+              <div className="session-filter-row">
+                <span className="session-filter-label">Agent</span>
+                <button
+                  className={`chip ${agentFilter === 'all' ? 'chip-on' : ''}`}
+                  onClick={() => setAgentFilter('all')}
+                >All</button>
+                {agentOptions.map(id => (
+                  <button
+                    key={id}
+                    className={`chip ${agentFilter === id ? 'chip-on' : ''}`}
+                    onClick={() => setAgentFilter(id)}
+                  >{id}</button>
+                ))}
+              </div>
+            )}
+            {channelOptions.length > 1 && (
+              <div className="session-filter-row">
+                <span className="session-filter-label">Channel</span>
+                <button
+                  className={`chip ${channelFilter === 'all' ? 'chip-on' : ''}`}
+                  onClick={() => setChannelFilter('all')}
+                >All</button>
+                {channelOptions.map(ch => (
+                  <button
+                    key={ch}
+                    className={`chip ${channelFilter === ch ? 'chip-on' : ''}`}
+                    onClick={() => setChannelFilter(ch)}
+                  >{channelIcon(ch)} {ch}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="session-list">
           {status !== 'connected' && (
             <div style={{ padding: '12px', fontSize: '11px', color: 'var(--ink2)' }}>
@@ -606,7 +692,14 @@ export default function Chat({ theme: _theme }: ChatProps) {
             <div className="info-row"><span className="info-label">Status</span><span className="info-val">{active.status ?? '—'}</span></div>
             <div className="info-row"><span className="info-label">Updated</span><span className="info-val">{fmtRelative(active.updatedAt)}</span></div>
             <div style={{ marginTop: '4px' }}>
-              <div className="card-title">Context Used</div>
+              <div className="card-title">
+                Context Used
+                {ctxIsEstimate && (
+                  <span style={{ marginLeft: '6px', fontSize: '9px', color: 'var(--ink2)', textTransform: 'none', letterSpacing: 'normal' }}>
+                    (est.)
+                  </span>
+                )}
+              </div>
               <div className="token-bar"><div className="token-fill" style={{ width: `${ctxPct}%` }} /></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--ink2)', marginTop: '3px' }}>
                 <span>{contextUsed.toLocaleString()} / {contextMax.toLocaleString()}</span>
@@ -626,16 +719,20 @@ export default function Chat({ theme: _theme }: ChatProps) {
               >Reset Session</button>
               <button
                 className="btn btn-ghost"
-                style={{ width: '100%', color: 'var(--err)', borderColor: 'var(--err)' }}
+                style={{ width: '100%' }}
+                title="Removes from the active list; transcript is moved to the gateway archive (recoverable)"
                 onClick={async () => {
                   if (!client) return;
+                  if (!confirm('Archive this session? It will be removed from the list but the transcript is kept in the gateway archive.')) return;
                   try {
+                    // sessions.delete with default deleteTranscript=true archives the transcript
+                    // (gateway calls archiveSessionTranscriptsForSessionDetailed under the hood).
                     await client.call('sessions.delete', { key: active.key });
                     setActiveKey(null);
                     refreshSessions();
                   } catch { /* ignore */ }
                 }}
-              >Delete Session</button>
+              >Archive Session</button>
             </div>
           </>
         )}

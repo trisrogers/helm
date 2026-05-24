@@ -634,6 +634,16 @@ input:focus, textarea:focus { border-color: var(--acc); }
 .chat-sessions { width: 240px; flex-shrink: 0; background: var(--surf); border-right: 1px solid var(--brd); display: flex; flex-direction: column; }
 .chat-sessions-head { padding: 10px 12px; border-bottom: 1px solid var(--brd); display: flex; align-items: center; gap: 8px; }
 .chat-sessions-head input { flex: 1; font-size: 11px; padding: 5px 8px; }
+
+/* Quick-filter chips above the session list */
+.session-filters { padding: 6px 10px; border-bottom: 1px solid var(--brd); display: flex; flex-direction: column; gap: 4px; background: var(--surf2); }
+.session-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.session-filter-label { font-size: 9px; color: var(--ink2); text-transform: uppercase; letter-spacing: 1px; min-width: 50px; }
+.chip { background: transparent; border: 1px solid var(--brd); color: var(--ink2); border-radius: var(--r); padding: 2px 6px; font-size: 10px; cursor: pointer; font-family: var(--fb); }
+.chip:hover { border-color: var(--acc); color: var(--ink); }
+.chip-on { background: var(--acc); color: var(--bg); border-color: var(--acc); }
+.chip-on:hover { color: var(--bg); }
+
 .session-list { flex: 1; overflow-y: auto; }
 .session-item { padding: 10px 12px; border-bottom: 1px solid var(--brd); cursor: pointer; transition: background .1s; }
 .session-item:hover { background: var(--surf2); }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Theme } from '../types';
 import { useGateway } from '../context/GatewayContext';
+import { navigateTo, extractHTMLFromAssistantText } from '../lib/handoff';
 
 interface SessionMessageEvent {
   sessionKey?: string;
@@ -705,6 +706,38 @@ export default function Chat({ theme: _theme }: ChatProps) {
                 <span>{contextUsed.toLocaleString()} / {contextMax.toLocaleString()}</span>
                 <span>{ctxPct.toFixed(1)}%</span>
               </div>
+            </div>
+            <div style={{ marginTop: '4px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+              <button
+                className="btn btn-ghost"
+                style={{ width: '100%', fontSize: '11px' }}
+                title="Send the latest assistant HTML (if any) to the Design canvas and switch screens"
+                onClick={() => {
+                  // Walk back through messages for the most recent assistant reply
+                  // and pull HTML out of it. Falls through to empty handoff so the
+                  // user lands on Design with their session context noted.
+                  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+                  const html = lastAssistant ? extractHTMLFromAssistantText(lastAssistant.text) : null;
+                  const label = active.displayName ?? active.derivedTitle ?? active.key;
+                  navigateTo('design', {
+                    ...(html ? { html } : {}),
+                    sourceLabel: `Chat session: ${label}`,
+                    ts: new Date().toISOString(),
+                  });
+                }}
+              >⬚ Open in Design</button>
+              <button
+                className="btn btn-ghost"
+                style={{ width: '100%', fontSize: '11px' }}
+                title="Switch to voice mode; the Talk screen will show this session as the source"
+                onClick={() => {
+                  navigateTo('talk', {
+                    fromSessionKey: active.key,
+                    fromDisplayName: active.displayName ?? active.derivedTitle ?? active.key,
+                    ts: new Date().toISOString(),
+                  });
+                }}
+              >◉ Switch to voice</button>
             </div>
             <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <button

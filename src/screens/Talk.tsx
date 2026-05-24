@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Theme } from '../types';
 import { useGateway } from '../context/GatewayContext';
+import { consumeHandoff, type TalkHandoff } from '../lib/handoff';
 import {
   resolveAudioRates,
   startMicCapture,
@@ -159,6 +160,7 @@ export default function Talk({ theme }: Props) {
   const [pttActive, setPttActive] = useState(false);
   const [micState, setMicState] = useState<'off' | 'requesting' | 'on' | 'denied' | 'error'>('off');
   const [level, setLevel] = useState(0);
+  const [handoff, setHandoff] = useState<TalkHandoff | null>(() => consumeHandoff('talk'));
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const captureRef = useRef<CaptureHandle | null>(null);
@@ -326,6 +328,24 @@ export default function Talk({ theme }: Props) {
 
   return (
     <div id="screen-talk" className="screen">
+      {handoff && (
+        <div
+          style={{
+            position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
+            background: 'var(--surf)', border: '1px solid var(--acc)', borderRadius: 'var(--r)',
+            padding: '6px 12px', fontSize: '11px', color: 'var(--ink)', zIndex: 5,
+            display: 'flex', alignItems: 'center', gap: '8px',
+          }}
+        >
+          <span style={{ color: 'var(--acc)' }}>↳ Continuing from chat:</span>
+          <b>{handoff.fromDisplayName}</b>
+          <button
+            className="btn btn-ghost"
+            style={{ fontSize: '9px', padding: '2px 6px' }}
+            onClick={() => setHandoff(null)}
+          >dismiss</button>
+        </div>
+      )}
       <div className="talk-mode-badge">
         <span className={`dot ${realtimeConfigured ? 'dot-ok' : 'dot-idle'}`} />
         <span>{mode === 'auto-detect' ? 'AUTO-DETECT MODE' : 'PUSH-TO-TALK MODE'}</span>

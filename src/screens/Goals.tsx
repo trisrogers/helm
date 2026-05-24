@@ -78,11 +78,11 @@ function ProgressRing({ pct }: { pct: number }) {
   );
 }
 
-const DECOMPOSE_PROMPT = `Help me decompose the goal below into 3–8 concrete tasks. For each task, give a title (under 70 chars), a one-line description, and a priority (low/medium/high). Format as markdown bullets:
+const DECOMPOSE_PROMPT = `Help me decompose the project below into 3–8 concrete tasks. For each task, give a title (under 70 chars), a one-line description, and a priority (low/medium/high). Format as markdown bullets:
 
 - **Title** [priority] — description
 
-Goal:
+Project:
 `;
 
 /* ── New goal modal ──────────────────────────────────────── */

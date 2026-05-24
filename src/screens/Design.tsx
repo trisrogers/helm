@@ -5,6 +5,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { bracketMatching, indentOnInput, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { html } from '@codemirror/lang-html';
 import { tags as t } from '@lezer/highlight';
+import { consumeHandoff } from '../lib/handoff';
 
 const STORAGE_KEY = 'helm:design:versions';
 
@@ -115,14 +116,25 @@ function buildArtifactMeta(label: string): string {
 /* ── Design ───────────────────────────────────────────────────── */
 
 export default function Design() {
-  const [content, setContent] = useState<string>(DEFAULT_HTML);
-  const [previewHTML, setPreviewHTML] = useState<string>(DEFAULT_HTML);
+  // Read any pending handoff from Chat before our initial state so the
+  // editor mounts with the right HTML on first render.
+  const initialHandoff = useMemo(() => consumeHandoff('design'), []);
+  const seededHTML = initialHandoff?.html ?? DEFAULT_HTML;
+
+  const [content, setContent] = useState<string>(seededHTML);
+  const [previewHTML, setPreviewHTML] = useState<string>(seededHTML);
   const [viewport, setViewport] = useState<Viewport>('desktop');
   const [versions, setVersions] = useState<DesignVersion[]>(() => loadVersions());
   const [activeId, setActiveId] = useState<string | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
   const [autoPreview, setAutoPreview] = useState(true);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(
+    initialHandoff
+      ? initialHandoff.html
+        ? `Loaded HTML from ${initialHandoff.sourceLabel ?? 'Chat'}`
+        : `Arrived from ${initialHandoff.sourceLabel ?? 'Chat'} — no HTML found in latest reply`
+      : null,
+  );
 
   const editorParentRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);

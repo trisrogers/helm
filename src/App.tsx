@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { type Theme, type ScreenId, NAV_LABELS, THEME_META } from './types';
 import { GatewayProvider, useGateway } from './context/GatewayContext';
 import { loadTasks, onStoreChange } from './lib/helm-store';
+import { onNavigate } from './lib/handoff';
 import Overview from './screens/Overview';
 import Chat from './screens/Chat';
 import Talk from './screens/Talk';
@@ -320,6 +321,11 @@ function AppInner() {
   }, []);
 
   useEffect(() => onStoreChange(() => setStoreTick(n => n + 1)), []);
+
+  // Cross-screen handoff: Chat → Design / Talk dispatches `helm:nav`;
+  // here we switch the active screen. The payload lives in localStorage
+  // and the target screen consumes it on mount via consumeHandoff().
+  useEffect(() => onNavigate(setScreen), []);
 
   // Global keyboard shortcuts. Skip when the user is typing in a field.
   useEffect(() => {

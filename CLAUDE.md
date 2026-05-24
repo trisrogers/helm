@@ -5,7 +5,7 @@ Control surface for the OpenClaw AI gateway. Vite + React + TypeScript SPA.
 ## Dev server
 
 ```bash
-npm run dev       # starts at http://localhost:5174
+npm run dev       # starts at http://localhost:5173
 npx tsc --noEmit  # typecheck
 ```
 

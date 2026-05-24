@@ -498,9 +498,38 @@ body {
   color: var(--ink2);
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
-.topbar-meta span { display: flex; align-items: center; gap: 4px; }
+.topbar-meta > span { display: flex; align-items: center; gap: 4px; }
+
+/* Theme dropdown — full names, themed to match the rest of the topbar. */
+.topbar-theme-select {
+  background: var(--surf2);
+  color: var(--ink);
+  border: 1px solid var(--brd);
+  border-radius: var(--r);
+  font-family: var(--fb);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.topbar-theme-select:hover { border-color: var(--acc); }
+.topbar-theme-select:focus { outline: none; border-color: var(--acc); }
+
+/* ConnStatus stronger affordance when something needs the user's action
+ * (no token, disconnected, auth_failed, error). */
+.conn-status-prompt {
+  border: 1px solid var(--warn);
+  border-radius: var(--r);
+  padding: 3px 8px;
+  color: var(--warn);
+}
+.conn-status-prompt:hover { background: rgba(200,120,32,.08); }
+
+/* Inline form variant used in the topbar: token input + Save/Cancel on one row. */
+.conn-edit-inline { flex-direction: row; gap: 6px; align-items: center; }
+.conn-edit-inline .conn-token-input { width: 260px; }
+.conn-edit-inline .conn-edit-btns { flex-direction: row; }
 
 #screen-host { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .screen { display: flex; flex-direction: column; height: 100%; overflow: hidden; }

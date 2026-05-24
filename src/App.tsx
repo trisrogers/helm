@@ -333,13 +333,13 @@ function ConnStatus() {
   const label =
     status === 'connected'   ? `Connected · ${serverVersion ?? ':18789'}` :
     status === 'connecting'  ? 'Connecting…'  :
-    status === 'auth_failed' ? 'Auth failed'  :
-    status === 'error'       ? 'Error'        :
-    token ? 'Disconnected' : 'No token set';
+    status === 'auth_failed' ? 'Auth failed — click to retry' :
+    status === 'error'       ? 'Error — click to retry' :
+    token ? 'Disconnected — click to update token' : 'Set gateway token →';
 
   if (editing) {
     return (
-      <div className="conn-edit">
+      <div className="conn-edit conn-edit-inline">
         <input
           className="conn-token-input"
           placeholder="Paste gateway token…"
@@ -360,7 +360,11 @@ function ConnStatus() {
   }
 
   return (
-    <div className="conn-status" onClick={() => { setDraft(token); setEditing(true); }} title="Click to set gateway token">
+    <div
+      className={`conn-status ${!token || status !== 'connected' ? 'conn-status-prompt' : ''}`}
+      onClick={() => { setDraft(token); setEditing(true); }}
+      title="Click to set gateway token"
+    >
       <div className={dotClass} />
       <span className="conn-label">{label}</span>
     </div>
@@ -422,6 +426,36 @@ function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
   );
 }
 
+interface DefaultModelInfo {
+  agentName: string;
+  modelPrimary?: string;
+}
+
+function useDefaultModel(): DefaultModelInfo | null {
+  const { client, status, snapshot } = useGateway();
+  const [info, setInfo] = useState<DefaultModelInfo | null>(null);
+  const defaultAgentId = snapshot?.sessionDefaults?.defaultAgentId;
+  useEffect(() => {
+    if (!client || status !== 'connected') { setInfo(null); return; }
+    let cancelled = false;
+    client.call<{ agents: Array<{ id: string; name?: string; identity?: { name?: string }; model?: { primary?: string } }>; defaultId?: string }>('agents.list')
+      .then(r => {
+        if (cancelled) return;
+        const list = r.agents ?? [];
+        const targetId = defaultAgentId ?? r.defaultId ?? list[0]?.id;
+        const a = list.find(x => x.id === targetId) ?? list[0];
+        if (!a) { setInfo(null); return; }
+        setInfo({
+          agentName: a.name ?? a.identity?.name ?? a.id,
+          modelPrimary: a.model?.primary,
+        });
+      })
+      .catch(() => { if (!cancelled) setInfo(null); });
+    return () => { cancelled = true; };
+  }, [client, status, defaultAgentId]);
+  return info;
+}
+
 function AppInner() {
   const [theme, setTheme]         = useState<Theme>('assay');
   const [screen, setScreen]       = useState<ScreenId>('overview');
@@ -429,6 +463,7 @@ function AppInner() {
   const [clock, setClock]         = useState('');
   const [storeTick, setStoreTick] = useState(0);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const defaultModel = useDefaultModel();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -544,32 +579,29 @@ function AppInner() {
           ))}
         </div>
 
-        <div className="sidebar-footer">
-          <div className="theme-selector">
-            <div className="theme-selector-label">Theme</div>
-            <div className="theme-btns">
-              {(['assay', 'politburo', 'blizzard'] as Theme[]).map(t => (
-                <button
-                  key={t}
-                  className={`theme-btn ${theme === t ? 'active' : ''}`}
-                  onClick={() => setTheme(t)}
-                  title={THEME_META[t].name}
-                >
-                  {t === 'assay' ? 'A' : t === 'politburo' ? 'P' : 'B'}
-                </button>
-              ))}
-            </div>
-          </div>
-          <ConnStatus />
-        </div>
       </nav>
 
       <div id="main">
         <div id="topbar">
           <div className="breadcrumb">{labels[screen]}</div>
           <div className="topbar-meta">
-            <span>Deltron Gateway · Sonnet 4.6</span>
-            <span style={{ color: 'var(--ok)' }}>● Online</span>
+            <span title={defaultModel?.agentName ? `Default agent: ${defaultModel.agentName}` : undefined}>
+              <span style={{ color: 'var(--ink2)' }}>Default model:</span>
+              <b style={{ color: 'var(--ink)', fontFamily: 'var(--fm)' }}>
+                {defaultModel?.modelPrimary ?? '—'}
+              </b>
+            </span>
+            <select
+              className="topbar-theme-select"
+              value={theme}
+              onChange={e => setTheme(e.target.value as Theme)}
+              title="Switch theme"
+            >
+              {(['assay', 'politburo', 'blizzard'] as Theme[]).map(t => (
+                <option key={t} value={t}>{THEME_META[t].name}</option>
+              ))}
+            </select>
+            <ConnStatus />
             <span style={{ fontFamily: 'var(--fm)', fontSize: '10px' }}>{clock}</span>
           </div>
         </div>

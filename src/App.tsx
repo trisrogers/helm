@@ -542,7 +542,9 @@ function AppInner() {
 
   return (
     <>
-      {theme === 'assay' && <AssayBorder />}
+      {/* Assay corner-frame removed — it overlapped the topbar / nav at this
+          density. The AssayBorder component is kept defined above in case we
+          bring it back as an opt-in decorative layer later. */}
 
       <nav id="sidebar" className={collapsed ? 'collapsed' : ''}>
         {theme === 'blizzard' && (

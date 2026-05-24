@@ -1090,6 +1090,56 @@ input:focus, textarea:focus { border-color: var(--acc); }
 [data-theme="blizzard"] .session-title { font-family: 'Oswald', sans-serif; text-transform: uppercase; font-size: 11px; letter-spacing: .06em; }
 [data-theme="blizzard"] .composer { background: #C8D8E4; border-top: 2px solid rgba(40,80,120,.2); }
 
+/* ── THEME POLISH (Phase-4 user feedback) ────────────────────────── */
+
+/* Assay — more contrast and slightly larger nav labels so the menu is
+ * easier to scan against the dark gold theme. */
+[data-theme="assay"] .nav-section { color: rgba(212,168,48,.65); font-size: 10px; letter-spacing: 2px; }
+[data-theme="assay"] .nav-item { color: rgba(236,216,160,.78); font-size: 13px; padding: 9px 14px; }
+[data-theme="assay"] .nav-item:hover { color: #ECD8A0; }
+[data-theme="assay"] .nav-label { font-size: 13px; }
+
+/* Assay — the "handwritten" (IM Fell English italic) accents Tris likes
+ * are too small to enjoy. Bump them ~50% in the surfaces where they
+ * appear most prominently. */
+[data-theme="assay"] .session-preview,
+[data-theme="assay"] .info-val,
+[data-theme="assay"] .msg-time { font-size: 14px; line-height: 1.5; }
+
+/* Politburo — .btn-ghost was inheriting the cream .btn colour via the
+ * higher-specificity Politburo override, then losing its red bg, ending
+ * up as invisible cream-on-cream until hover. Set its colour explicitly. */
+[data-theme="politburo"] .btn-ghost { color: #CC1111; }
+[data-theme="politburo"] .btn-ghost:hover { color: #F2EDD5; background: #CC1111; border-color: #CC1111; }
+
+/* Blizzard — top of the sidebar gradient was lighter than the HELM
+ * wordmark, so the title vanished into the ice. Start darker, keep the
+ * fade into night. */
+[data-theme="blizzard"] .bliz-bg {
+  background: linear-gradient(180deg,
+    #2A4866 0%,
+    #2A4060 14%,
+    #283C58 28%,
+    #1F3450 45%,
+    #182C44 60%,
+    #142838 75%,
+    #0F1F2C 90%,
+    #0A1622 100%
+  );
+}
+
+/* Blizzard — trees were too small / too dark to register. Scale the
+ * watermark up and add a touch of opacity. */
+[data-theme="blizzard"] .bliz-trees { height: 300px; opacity: 0.75; }
+[data-theme="blizzard"] .bliz-trees polygon,
+[data-theme="blizzard"] .bliz-trees rect[fill="#131808"] { fill: #243828; }
+
+/* Blizzard — same contrast/size bump as Assay so the menu is readable. */
+[data-theme="blizzard"] .nav-section { color: rgba(224,236,244,.55); font-size: 10px; letter-spacing: 2px; }
+[data-theme="blizzard"] .nav-item { color: rgba(232,240,248,.82); font-size: 13px; padding: 9px 14px; }
+[data-theme="blizzard"] .nav-item:hover { color: rgba(255,255,255,.95); }
+[data-theme="blizzard"] .nav-label { font-size: 13px; }
+
 /* ── SCROLLBAR ───────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg); }

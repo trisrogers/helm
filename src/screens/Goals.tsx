@@ -4,13 +4,16 @@ import { useGateway } from '../context/GatewayContext';
 import {
   type Goal,
   type Task,
+  type TaskStatus,
   type CommentaryEntry,
   loadGoals, saveGoals,
   loadTasks,
   createGoal, updateGoal, deleteGoal,
+  createTask, updateTask, deleteTask,
   loadCommentary, addCommentary, commentaryFor,
   goalProgress, tasksForGoal,
 } from '../lib/helm-store';
+import { TaskBoard, TaskDetailModal } from '../components/TaskBoard';
 
 interface Props { theme: Theme; }
 
@@ -156,6 +159,7 @@ export default function Goals({ theme }: Props) {
   const [decomposeBusy, setDecomposeBusy] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState<string | null>(null);
   const [narrativeDraft, setNarrativeDraft] = useState('');
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     setGoals(loadGoals());
@@ -198,12 +202,53 @@ export default function Goals({ theme }: Props) {
 
   const handleDelete = () => {
     if (!active) return;
-    if (!confirm('Delete this goal? Linked tasks will keep their data but be unlinked.')) return;
+    if (!confirm('Delete this project? Linked tasks will keep their data but be unlinked.')) return;
     deleteGoal(active.id);
     const next = loadGoals();
     setGoals(next);
     setActiveId(next[0]?.id ?? null);
   };
+
+  /* ── Embedded TaskBoard handlers (tasks scoped to the active project) ── */
+
+  const handleAddTask = useCallback(() => {
+    if (!active) return;
+    const title = prompt('New task title:');
+    if (!title?.trim()) return;
+    const t = createTask({ title: title.trim(), goalId: active.id });
+    setTasks(loadTasks());
+    setOpenTaskId(t.id);
+  }, [active]);
+
+  const handleTaskMove = useCallback((id: string, toStatus: TaskStatus) => {
+    const current = tasks.find(t => t.id === id);
+    if (!current || current.status === toStatus) return;
+    const next = updateTask(id, { status: toStatus });
+    if (next) {
+      addCommentary({ kind: 'status-change', taskId: id, author: 'user', body: `${current.status} → ${toStatus}` });
+      setTasks(loadTasks());
+      setCommentary(loadCommentary());
+    }
+  }, [tasks]);
+
+  const handleTaskSave = useCallback((id: string, patch: Partial<Task>) => {
+    const next = updateTask(id, patch);
+    if (next) {
+      addCommentary({ kind: 'status-change', taskId: id, author: 'system', body: `Updated: ${Object.keys(patch).join(', ')}` });
+      setTasks(loadTasks());
+      setCommentary(loadCommentary());
+    }
+  }, []);
+
+  const handleTaskDelete = useCallback((id: string) => {
+    deleteTask(id);
+    setTasks(loadTasks());
+    setCommentary(loadCommentary());
+    setOpenTaskId(null);
+  }, []);
+
+  const openTask = openTaskId ? tasks.find(t => t.id === openTaskId) ?? null : null;
+  const openTaskCommentary = openTask ? commentaryFor({ taskId: openTask.id }, commentary) : [];
 
   /** Open a Chat session with a decomposition prompt; user can copy
    *  suggested tasks back via the Tasks screen. The AI's response is
@@ -328,43 +373,37 @@ export default function Goals({ theme }: Props) {
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <div className="card-title">Tasks ({goalTasks.length})</div>
               <button
+                className="btn"
+                style={{ fontSize: '10px', padding: '3px 10px', marginLeft: 'auto' }}
+                onClick={handleAddTask}
+              >+ New Task</button>
+              <button
                 className="btn btn-ghost"
-                style={{ fontSize: '10px', padding: '3px 8px', marginLeft: 'auto' }}
+                style={{ fontSize: '10px', padding: '3px 8px' }}
                 onClick={handleDecompose}
                 disabled={decomposeBusy || status !== 'connected'}
                 title={status !== 'connected' ? 'Connect to the gateway first' : ''}
-              >{decomposeBusy ? 'Working…' : '✦ Decompose with AI'}</button>
+              >{decomposeBusy ? 'Working…' : '✦ Plan with AI'}</button>
             </div>
             {decomposeMsg && (
               <div style={{ fontSize: '11px', color: 'var(--acc)' }}>{decomposeMsg}</div>
             )}
 
-            <div className="goal-tasks-grid">
-              {goalTasks.length === 0 && (
-                <div style={{ fontSize: '11px', color: 'var(--ink2)' }}>No tasks linked to this goal yet — create some in Works Orders and set the goal field.</div>
-              )}
-              {goalTasks.map(t => {
-                const dotCls =
-                  t.status === 'done' ? 'dot-ok' :
-                  t.status === 'in_progress' ? 'dot-warn' :
-                  t.status === 'review' ? 'dot-err' : 'dot-idle';
-                const pillCls =
-                  t.status === 'done' ? 'pill-ok' :
-                  t.status === 'in_progress' ? 'pill-warn' :
-                  t.status === 'review' ? 'pill-err' : 'pill-idle';
-                const pillText =
-                  t.status === 'in_progress' ? 'In Progress' :
-                  t.status === 'review' ? 'Review' :
-                  t.status === 'done' ? 'Done' : 'Backlog';
-                return (
-                  <div key={t.id} className="goal-task-row">
-                    <div className={`dot ${dotCls}`} />
-                    <span>{t.title}</span>
-                    <span className={`pill ${pillCls} stage`}>{pillText}</span>
-                  </div>
-                );
-              })}
-            </div>
+            {goalTasks.length === 0 ? (
+              <div style={{ fontSize: '11px', color: 'var(--ink2)', padding: '12px', border: '1px dashed var(--brd)', borderRadius: 'var(--r)', textAlign: 'center' }}>
+                No tasks linked yet. Click <b>+ New Task</b> to add one, or <b>✦ Plan with AI</b> to draft a set.
+              </div>
+            ) : (
+              <div className="project-kanban-wrap">
+                <TaskBoard
+                  tasks={goalTasks}
+                  onOpenTask={(id) => setOpenTaskId(id)}
+                  onMoveTask={handleTaskMove}
+                  compact
+                  emptyHint="—"
+                />
+              </div>
+            )}
 
             <div>
               <div className="card-title" style={{ marginBottom: '6px' }}>Narrative</div>
@@ -402,6 +441,20 @@ export default function Goals({ theme }: Props) {
       </div>
 
       {showNew && <NewGoalModal onClose={() => setShowNew(false)} onCreate={handleCreate} />}
+      {openTask && (
+        <TaskDetailModal
+          task={openTask}
+          goals={goals}
+          commentary={openTaskCommentary}
+          onClose={() => setOpenTaskId(null)}
+          onSave={(patch) => handleTaskSave(openTask.id, patch)}
+          onDelete={() => handleTaskDelete(openTask.id)}
+          onAddCommentary={(kind, body) => {
+            addCommentary({ kind, taskId: openTask.id, author: 'user', body });
+            setCommentary(loadCommentary());
+          }}
+        />
+      )}
     </div>
   );
 }

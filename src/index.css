@@ -779,6 +779,19 @@ input:focus, textarea:focus { border-color: var(--acc); }
 .goal-tasks-grid { display: flex; flex-direction: column; gap: 6px; }
 .goal-task-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r); font-size: 11px; }
 .goal-task-row .stage { font-size: 9px; margin-left: auto; }
+
+/* Embedded kanban inside a Project detail pane. The standalone kanban is
+ * .kanban — when wrapped in .project-kanban-wrap it shrinks the column
+ * mins so four columns fit inside the project detail without horizontal
+ * scroll in a typical 1100px+ viewport. */
+.project-kanban-wrap { background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r); overflow: hidden; }
+.project-kanban-wrap .kanban { height: auto; max-height: 360px; }
+.kanban-compact .k-col { min-width: 160px; }
+.kanban-compact .k-head { padding: 6px 10px; font-size: 9px; }
+.kanban-compact .k-cards { padding: 6px; }
+.kanban-compact .k-card { padding: 7px; margin-bottom: 5px; }
+.kanban-compact .k-card-title { font-size: 11px; }
+.kanban-compact .k-card-log { font-size: 9px; }
 .ai-log { background: var(--surf); border: 1px solid var(--brd); border-radius: var(--r); padding: 12px; font-size: 11px; line-height: 1.6; }
 .ai-log-entry { padding: 6px 0; border-bottom: 1px solid var(--brd); display: flex; gap: 8px; }
 .ai-log-entry:last-child { border: none; }

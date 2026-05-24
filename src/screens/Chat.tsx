@@ -2,6 +2,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Theme } from '../types';
 import { useGateway } from '../context/GatewayContext';
 import { navigateTo, extractHTMLFromAssistantText } from '../lib/handoff';
+import {
+  createChatModelOverride,
+  type ChatModelOverride,
+} from '../lib/chat/chat-model-ref';
+import { resolveChatModelSelectState } from '../lib/chat/chat-model-select-state';
+import { listThinkingLevelLabels, normalizeThinkLevel } from '../lib/chat/thinking';
+import type { ModelCatalogEntry, SessionsDefaults } from '../lib/chat/types';
+import { PinnedMessages } from '../lib/chat/pinned-messages';
+import { exportChatMarkdown } from '../lib/chat/export';
+import {
+  handleChatInputHistoryKey,
+  recordNonTranscriptInputHistory,
+  resetChatInputHistoryNavigation,
+  type ChatInputHistoryState,
+} from '../lib/chat/input-history';
+import {
+  executeSlashCommand,
+  matchSlashCommands,
+  parseSlashInput,
+  type SlashCommandDef,
+} from '../lib/chat/slash-commands-native';
 
 interface SessionMessageEvent {
   sessionKey?: string;
@@ -18,6 +39,7 @@ interface SessionRow {
   key: string;
   status?: 'running' | 'done' | 'failed' | 'killed' | 'timeout';
   model?: string;
+  modelProvider?: string;
   lastMessagePreview?: string;
   displayName?: string;
   derivedTitle?: string;
@@ -56,6 +78,8 @@ interface DisplayMsg {
   /** Run id this message is associated with, used to swap a streaming
    *  placeholder for the final projected message when chat.final arrives. */
   runId?: string;
+  /** Tool calls embedded in an assistant message's content blocks. */
+  toolCalls?: Array<{ name: string; input?: unknown }>;
 }
 
 interface AgentEvent {
@@ -108,6 +132,37 @@ function normalizeRole(r: unknown): DisplayMsg['role'] {
   return 'system';
 }
 
+function extractToolBlocks(content: unknown): Array<{ name: string; input?: unknown }> {
+  if (!Array.isArray(content)) return [];
+  const blocks: Array<{ name: string; input?: unknown }> = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === 'tool_use' && typeof b.name === 'string') {
+      blocks.push({ name: b.name, input: b.input });
+    }
+  }
+  return blocks;
+}
+
+function summarizeToolBlock(block: { name: string; input?: unknown }): string {
+  const args = block.input;
+  if (!args || typeof args !== 'object') return block.name;
+  // One-line preview of the first 1-2 meaningful arg values.
+  const entries = Object.entries(args as Record<string, unknown>).slice(0, 2);
+  const preview = entries
+    .map(([k, v]) => {
+      if (typeof v === 'string') {
+        const trimmed = v.length > 60 ? `${v.slice(0, 60)}…` : v;
+        return `${k}=${JSON.stringify(trimmed)}`;
+      }
+      if (typeof v === 'number' || typeof v === 'boolean') return `${k}=${v}`;
+      return `${k}=…`;
+    })
+    .join(' ');
+  return preview ? `${block.name}(${preview})` : block.name;
+}
+
 function projectMsg(
   raw: RawMessage,
   fallbackKey: string,
@@ -116,8 +171,24 @@ function projectMsg(
 ): DisplayMsg | null {
   const role = normalizeRole(raw.role);
   const text = (raw.text ?? extractText(raw.content)).trim();
-  if (!text) return null;
-  if (role === 'tool' || role === 'system') return null;
+  if (role === 'tool' || role === 'system') {
+    // Project tool/system messages so the "show tools" toggle can surface them.
+    // Empty text is OK — render the role label instead.
+    const seq = envelopeSeq ?? raw._openclaw?.seq;
+    const stableId = envelopeId ?? raw._openclaw?.id;
+    const id = stableId
+      ?? (seq !== undefined ? `${fallbackKey}-seq-${seq}` : `${fallbackKey}-${Math.random().toString(36).slice(2, 8)}`);
+    const tsRaw = raw.timestamp;
+    const ts =
+      typeof tsRaw === 'number' ? tsRaw :
+      typeof tsRaw === 'string' ? Date.parse(tsRaw) || undefined :
+      undefined;
+    return { id, role, text: text || `[${role}]`, ts };
+  }
+  // For assistant messages with tool_use blocks, expose the tool calls inline
+  // so the "show tools" toggle has something to render. Text part stays in `text`.
+  const toolBlocks = role === 'assistant' ? extractToolBlocks(raw.content) : [];
+  if (!text && toolBlocks.length === 0) return null;
   const seq = envelopeSeq ?? raw._openclaw?.seq;
   const stableId = envelopeId ?? raw._openclaw?.id;
   const id = stableId
@@ -127,7 +198,7 @@ function projectMsg(
     typeof tsRaw === 'number' ? tsRaw :
     typeof tsRaw === 'string' ? Date.parse(tsRaw) || undefined :
     undefined;
-  return { id, role, text, ts };
+  return { id, role, text, ts, toolCalls: toolBlocks.length > 0 ? toolBlocks : undefined };
 }
 
 function fmtTime(ts?: number) {
@@ -170,6 +241,7 @@ function normalizeChannel(ch: string | undefined): string {
 /* ── Chat ─────────────────────────────────────────────────────── */
 
 const CHAT_ACTIVE_KEY_STORAGE = 'helm:chat:activeKey';
+const SHOW_TOOLS_STORAGE = 'helm:chat:showTools';
 
 function readStoredActiveKey(): string | null {
   try { return localStorage.getItem(CHAT_ACTIVE_KEY_STORAGE) || null; }
@@ -206,6 +278,38 @@ export default function Chat({ theme: _theme }: ChatProps) {
   const [agentFilter, setAgentFilter] = useState<string>('all');
   const [channelFilter, setChannelFilter] = useState<string>('all');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showTools, setShowToolsState] = useState<boolean>(() => {
+    try { return localStorage.getItem(SHOW_TOOLS_STORAGE) === '1'; } catch { return false; }
+  });
+  const setShowTools = useCallback((v: boolean) => {
+    setShowToolsState(v);
+    try { localStorage.setItem(SHOW_TOOLS_STORAGE, v ? '1' : '0'); } catch { /* quota */ }
+  }, []);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogEntry[]>([]);
+  /** Local override cache — reflects in-flight `sessions.patch` calls before
+   *  the next sessions.list refresh. Values: ChatModelOverride to set, `null`
+   *  to clear (back to default). Missing key = inherit from server row. */
+  const [modelOverrides, setModelOverrides] = useState<Record<string, ChatModelOverride | null>>({});
+  const [sessionsDefaults, setSessionsDefaults] = useState<SessionsDefaults | null>(null);
+  /** Same idea, for thinking level. `null` = explicit clear, missing = inherit. */
+  const [thinkingOverrides, setThinkingOverrides] = useState<Record<string, string | null>>({});
+  const [pinnedTick, setPinnedTick] = useState(0);
+  const pinnedRef = useRef<PinnedMessages | null>(null);
+  const inputHistoryStateRef = useRef<ChatInputHistoryState>({
+    sessionKey: '',
+    chatLoading: false,
+    chatMessage: '',
+    chatMessages: [],
+    chatLocalInputHistoryBySession: {},
+    chatInputHistorySessionKey: null,
+    chatInputHistoryItems: null,
+    chatInputHistoryIndex: -1,
+    chatDraftBeforeHistory: null,
+  });
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  /** Forward-declared so handleSend (defined earlier) can call into the
+   *  slash-command executor (defined below after model/thinking handlers). */
+  const runSlashIfApplicableRef = useRef<((input: string) => Promise<boolean>) | null>(null);
   /** Run id of the most recent send that we're still waiting on. Drives the
    *  "thinking…" placeholder while the gateway hasn't emitted any text yet.
    *  Cleared on agent.lifecycle.end for the matching run. */
@@ -226,10 +330,13 @@ export default function Chat({ theme: _theme }: ChatProps) {
   const refreshSessions = useCallback(async () => {
     if (!client || status !== 'connected') return;
     try {
-      const result = await client.call<{ sessions: SessionRow[] }>('sessions.list');
+      const result = await client.call<{ sessions: SessionRow[]; defaults?: SessionsDefaults | null }>('sessions.list');
       const rows = result.sessions ?? [];
       rows.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
       setSessions(rows);
+      if (result.defaults !== undefined) {
+        setSessionsDefaults(result.defaults ?? null);
+      }
       // Keep the persisted selection if it's still a known session; otherwise
       // fall back to the most-recently-updated one. Without this fallback,
       // an obsolete stored key would silently render an empty thread.
@@ -246,6 +353,10 @@ export default function Chat({ theme: _theme }: ChatProps) {
     if (!client || status !== 'connected') return;
     refreshSessions();
     client.call<{ agents: AgentRow[] }>('agents.list').then(r => setAgents(r.agents ?? [])).catch(() => {});
+    // Model catalog rarely changes — pull once per connect.
+    client.call<{ models?: ModelCatalogEntry[] }>('models.list')
+      .then(r => setModelCatalog(r.models ?? []))
+      .catch(() => { /* gateway may not have models endpoint */ });
     const unsubs = [
       client.on('sessions.changed', () => { refreshSessions(); }),
     ];
@@ -401,11 +512,43 @@ export default function Chat({ theme: _theme }: ChatProps) {
     el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Per-session PinnedMessages instance — recreate when activeKey changes so
+  // pinned indices match the messages currently in the thread.
+  useEffect(() => {
+    if (!activeKey) {
+      pinnedRef.current = null;
+      return;
+    }
+    pinnedRef.current = new PinnedMessages(activeKey);
+    setPinnedTick(t => t + 1);
+  }, [activeKey]);
+
+  // Mirror the React state the input-history module reads through. It mutates
+  // its argument in place, so we keep a single ref instead of bouncing through
+  // setState — pinnedTick re-runs the read paths.
+  useEffect(() => {
+    inputHistoryStateRef.current.sessionKey = activeKey ?? '';
+    inputHistoryStateRef.current.chatLoading = loadingMsgs || sending;
+    inputHistoryStateRef.current.chatMessage = composer;
+    inputHistoryStateRef.current.chatMessages = messages;
+  }, [activeKey, loadingMsgs, sending, composer, messages]);
+
   const handleSend = async () => {
     const text = composer.trim();
     if (!text || !client || !activeKey || sending) return;
+    // Intercept slash commands before optimistic insert + RPC send.
+    if (text.startsWith('/')) {
+      const consumed = await runSlashIfApplicableRef.current?.(text);
+      if (consumed) {
+        recordNonTranscriptInputHistory(inputHistoryStateRef.current, text);
+        resetChatInputHistoryNavigation(inputHistoryStateRef.current);
+        return;
+      }
+      // Not a known command → fall through and send as a plain message.
+    }
     setSending(true);
     setErrorMsg(null);
+    recordNonTranscriptInputHistory(inputHistoryStateRef.current, text);
     // Optimistic insert so the user's message appears immediately. The real
     // echo from session.message will replace this row (matched by text in
     // the session.message handler above).
@@ -413,6 +556,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
     const ts = Date.now();
     setMessages(prev => [...prev, { id: optimisticId, role: 'user', text, ts }]);
     setComposer('');
+    resetChatInputHistoryNavigation(inputHistoryStateRef.current);
     try {
       const resp = await client.call<{ runId?: string }>('sessions.send', { key: activeKey, message: text });
       if (resp?.runId) setPendingRunId(resp.runId);
@@ -444,6 +588,116 @@ export default function Chat({ theme: _theme }: ChatProps) {
       setErrorMsg(e instanceof Error ? e.message : 'create failed');
     }
   };
+
+  const visibleMessages = useMemo(() => {
+    if (showTools) return messages;
+    // When tools are hidden, drop role=tool/system rows entirely, and drop
+    // assistant rows whose body is empty and only carry tool_use blocks.
+    return messages.filter(m => {
+      if (m.role === 'tool' || m.role === 'system') return false;
+      if (m.role === 'assistant' && !m.text.trim() && m.toolCalls?.length) return false;
+      return true;
+    });
+  }, [messages, showTools]);
+
+  const modelSelectState = useMemo(() => resolveChatModelSelectState({
+    sessionKey: activeKey ?? '',
+    chatModelOverrides: modelOverrides,
+    chatModelCatalog: modelCatalog,
+    sessionsResult: sessions ? { sessions, defaults: sessionsDefaults } : null,
+  }), [activeKey, modelOverrides, modelCatalog, sessions, sessionsDefaults]);
+
+  const thinkingLevels = useMemo(() => listThinkingLevelLabels(), []);
+  const activeRowForControls = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
+  const currentThinking = useMemo(() => {
+    if (!activeKey) return '';
+    const override = thinkingOverrides[activeKey];
+    if (override !== undefined) return override ?? '';
+    return normalizeThinkLevel(activeRowForControls?.thinkingLevel) ?? '';
+  }, [activeKey, thinkingOverrides, activeRowForControls]);
+
+  const handleModelChange = useCallback(async (qualifiedValue: string) => {
+    if (!client || !activeKey) return;
+    const prevOverride = modelOverrides[activeKey];
+    const nextOverride = qualifiedValue ? createChatModelOverride(qualifiedValue) : null;
+    setModelOverrides(prev => ({ ...prev, [activeKey]: nextOverride }));
+    try {
+      await client.call('sessions.patch', {
+        key: activeKey,
+        model: qualifiedValue || null,
+      });
+      refreshSessions();
+    } catch (e) {
+      setModelOverrides(prev => ({ ...prev, [activeKey]: prevOverride ?? null }));
+      setErrorMsg(e instanceof Error ? e.message : 'model patch failed');
+    }
+  }, [client, activeKey, modelOverrides, refreshSessions]);
+
+  const handleThinkingChange = useCallback(async (level: string) => {
+    if (!client || !activeKey) return;
+    const prev = thinkingOverrides[activeKey];
+    const next = level ? level : null;
+    setThinkingOverrides(p => ({ ...p, [activeKey]: next }));
+    try {
+      await client.call('sessions.patch', {
+        key: activeKey,
+        thinkingLevel: next,
+      });
+      refreshSessions();
+    } catch (e) {
+      setThinkingOverrides(p => ({ ...p, [activeKey]: prev ?? null }));
+      setErrorMsg(e instanceof Error ? e.message : 'thinking patch failed');
+    }
+  }, [client, activeKey, thinkingOverrides, refreshSessions]);
+
+  const slashMatches = useMemo<SlashCommandDef[]>(() => {
+    if (!composer.startsWith('/')) return [];
+    return matchSlashCommands(composer);
+  }, [composer]);
+  const [slashHover, setSlashHover] = useState(0);
+  useEffect(() => { setSlashHover(0); }, [slashMatches.length]);
+
+  const runSlashIfApplicable = useCallback(async (input: string): Promise<boolean> => {
+    if (!parseSlashInput(input)) return false;
+    if (!activeKey || !client) return false;
+    const result = await executeSlashCommand(input, {
+      setModel: handleModelChange,
+      setThinking: handleThinkingChange,
+      compact: () => client.call('sessions.compact', { key: activeKey }).then(() => undefined),
+      reset: () => client.call('sessions.reset', { key: activeKey }).then(() => setMessages([])),
+      clearLocal: () => setMessages([]),
+      exportChat: () => {
+        const name = activeRowForControls?.displayName ?? activeRowForControls?.derivedTitle ?? activeRowForControls?.agentRuntime?.agentId ?? 'assistant';
+        exportChatMarkdown(messages, name);
+      },
+      newSession: () => handleNewSession(),
+    });
+    if (!result.consumed) return false;
+    setComposer('');
+    if (result.message) {
+      // Render the result as a synthetic system message so the user sees it.
+      const id = `local:slash:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      setMessages(prev => [...prev, { id, role: 'system', text: `/${parseSlashInput(input)?.command} → ${result.message}`, ts: Date.now() }]);
+    }
+    return true;
+  }, [client, activeKey, handleModelChange, handleThinkingChange, messages, activeRowForControls, handleNewSession]);
+
+  // Plug the forward-declared ref so handleSend can invoke the executor.
+  useEffect(() => {
+    runSlashIfApplicableRef.current = runSlashIfApplicable;
+  }, [runSlashIfApplicable]);
+
+  const handleExport = useCallback(() => {
+    if (!activeRowForControls) return;
+    const assistantName =
+      activeRowForControls.displayName
+      ?? activeRowForControls.derivedTitle
+      ?? activeRowForControls.agentRuntime?.agentId
+      ?? 'assistant';
+    // exportChatMarkdown expects raw upstream-style messages; our DisplayMsg
+    // already has `text` so it serialises cleanly via the simplified extractor.
+    exportChatMarkdown(messages, assistantName);
+  }, [activeRowForControls, messages]);
 
   // Filter chips
   const agentOptions = useMemo(() => {
@@ -601,24 +855,85 @@ export default function Chat({ theme: _theme }: ChatProps) {
             <div style={{ color: 'var(--ink2)', fontSize: '11px' }}>Loading history…</div>
           )}
           {activeKey && !loadingMsgs && messages.length === 0 && (
-            <div style={{ color: 'var(--ink2)', fontSize: '11px' }}>No messages yet — send the first.</div>
-          )}
-          {messages.map(m => (
-            <div key={m.id} className={`msg ${m.role === 'user' ? 'user' : ''}`}>
-              <div className="msg-avatar">{m.role === 'user' ? 'U' : 'D'}</div>
-              <div>
-                <div className="msg-body" style={{ whiteSpace: 'pre-wrap' }}>
-                  {m.text}
-                  {m.streaming && <span className="streaming-cursor" />}
-                </div>
-                {m.ts ? (
-                  <div className="msg-time">{fmtTime(m.ts)}{m.streaming ? ' · streaming…' : ''}</div>
-                ) : m.streaming ? (
-                  <div className="msg-time">streaming…</div>
-                ) : null}
+            <div className="chat-welcome">
+              <div style={{ color: 'var(--ink2)', fontSize: '11px', marginBottom: '8px' }}>
+                Ready when you are.
+              </div>
+              <div className="welcome-suggestions">
+                {[
+                  'Summarize my recent sessions',
+                  'What can you do?',
+                  'Check system health',
+                ].map(suggestion => (
+                  <button
+                    key={suggestion}
+                    className="chip"
+                    onClick={() => setComposer(suggestion)}
+                  >{suggestion}</button>
+                ))}
               </div>
             </div>
-          ))}
+          )}
+          {(() => { void pinnedTick; return null; })()}
+          {visibleMessages.map((m, idx) => {
+            const isPinned = pinnedRef.current?.has(idx) ?? false;
+            const isTool = m.role === 'tool' || m.role === 'system';
+            const avatarLabel = m.role === 'user' ? 'U' : isTool ? '🔧' : 'D';
+            return (
+              <div key={m.id} className={`msg ${m.role === 'user' ? 'user' : ''} ${isPinned ? 'pinned' : ''} ${isTool ? 'tool' : ''}`}>
+                <div className="msg-avatar">{avatarLabel}</div>
+                <div>
+                  {m.text && (
+                    <div className="msg-body" style={{ whiteSpace: 'pre-wrap', opacity: isTool ? 0.75 : 1, fontFamily: isTool ? 'var(--fm)' : undefined, fontSize: isTool ? '11px' : undefined }}>
+                      {m.text}
+                      {m.streaming && <span className="streaming-cursor" />}
+                    </div>
+                  )}
+                  {m.toolCalls?.map((tc, i) => (
+                    <div
+                      key={`${m.id}:tool:${i}`}
+                      style={{
+                        marginTop: '4px',
+                        padding: '4px 8px',
+                        background: 'var(--bg2, rgba(255,255,255,0.04))',
+                        border: '1px solid var(--bord)',
+                        borderRadius: '3px',
+                        fontFamily: 'var(--fm)',
+                        fontSize: '11px',
+                        color: 'var(--ink2)',
+                      }}
+                    >
+                      <span style={{ color: 'var(--acc)', marginRight: '6px' }}>🔧</span>
+                      {summarizeToolBlock(tc)}
+                    </div>
+                  ))}
+                  <div className="msg-time">
+                    {m.ts ? fmtTime(m.ts) : ''}
+                    {m.streaming ? (m.ts ? ' · streaming…' : 'streaming…') : ''}
+                    {activeKey && (
+                      <button
+                        className="msg-pin"
+                        onClick={() => {
+                          pinnedRef.current?.toggle(idx);
+                          setPinnedTick(t => t + 1);
+                        }}
+                        title={isPinned ? 'Unpin' : 'Pin this message'}
+                        style={{
+                          marginLeft: '8px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: isPinned ? 'var(--acc)' : 'var(--ink2)',
+                          cursor: 'pointer',
+                          padding: 0,
+                          fontSize: '11px',
+                        }}
+                      >{isPinned ? '★' : '☆'}</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
           {pendingRunId && !messages.some(m => m.runId === pendingRunId) && (
             <div className="msg">
               <div className="msg-avatar">D</div>
@@ -632,20 +947,74 @@ export default function Chat({ theme: _theme }: ChatProps) {
 
         <div className="composer">
           <div className="composer-top">
-            <span>Model:</span>
-            <span style={{ color: 'var(--acc)', fontFamily: 'var(--fm)' }}>{active?.model ?? '—'}</span>
-            {active?.thinkingLevel != null && (
-              <>
-                <span style={{ marginLeft: '8px' }}>Thinking:</span>
-                <span style={{ color: 'var(--acc)' }}>{String(active.thinkingLevel)}</span>
-              </>
-            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span>Model:</span>
+              <select
+                value={modelSelectState.currentOverride}
+                onChange={e => handleModelChange(e.target.value)}
+                disabled={!activeKey}
+                style={{
+                  background: 'transparent',
+                  color: 'var(--acc)',
+                  fontFamily: 'var(--fm)',
+                  border: '1px solid var(--bord)',
+                  padding: '2px 4px',
+                  fontSize: '11px',
+                  maxWidth: '180px',
+                }}
+                title={modelSelectState.currentOverride || modelSelectState.defaultLabel}
+              >
+                <option value="">{modelSelectState.defaultLabel}</option>
+                {modelSelectState.options.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '8px' }}>
+              <span>Thinking:</span>
+              <select
+                value={currentThinking}
+                onChange={e => handleThinkingChange(e.target.value)}
+                disabled={!activeKey}
+                style={{
+                  background: 'transparent',
+                  color: 'var(--acc)',
+                  border: '1px solid var(--bord)',
+                  padding: '2px 4px',
+                  fontSize: '11px',
+                }}
+              >
+                <option value="">default</option>
+                {thinkingLevels.map(level => (
+                  <option key={level} value={level}>{level}</option>
+                ))}
+              </select>
+            </label>
+            <label
+              style={{ marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '10px', cursor: 'pointer' }}
+              title="Show or hide tool-call messages in the thread"
+            >
+              <input
+                type="checkbox"
+                checked={showTools}
+                onChange={e => setShowTools(e.target.checked)}
+                style={{ margin: 0 }}
+              />
+              Tools
+            </label>
             {errorMsg && (
               <span style={{ marginLeft: '8px', color: 'var(--err)' }}>{errorMsg}</span>
             )}
             <button
               className="btn"
               style={{ marginLeft: 'auto', padding: '3px 8px', fontSize: '10px' }}
+              onClick={handleExport}
+              disabled={messages.length === 0}
+              title="Download conversation as Markdown"
+            >⤓ Export</button>
+            <button
+              className="btn"
+              style={{ padding: '3px 8px', fontSize: '10px' }}
               onClick={handleAbort}
               disabled={!active?.hasActiveRun}
             >✕ Abort</button>
@@ -656,16 +1025,119 @@ export default function Chat({ theme: _theme }: ChatProps) {
             <div className="surv-stat"><div className="surv-dot c"></div><div className="surv-bar"><div className="surv-fill c"></div></div></div>
             <div className="surv-stat"><div className="surv-dot f"></div><div className="surv-bar"><div className="surv-fill f"></div></div></div>
           </div>
-          <div className="composer-row">
+          <div className="composer-row" style={{ position: 'relative' }}>
+            {slashMatches.length > 0 && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 4px)',
+                  left: 0,
+                  right: 0,
+                  background: 'var(--bg, #1a1a1a)',
+                  border: '1px solid var(--bord)',
+                  borderRadius: '3px',
+                  maxHeight: '240px',
+                  overflowY: 'auto',
+                  fontSize: '11px',
+                  zIndex: 10,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                }}
+              >
+                {slashMatches.map((cmd, i) => (
+                  <div
+                    key={cmd.key}
+                    onMouseEnter={() => setSlashHover(i)}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setComposer(`/${cmd.key}${cmd.args ? ' ' : ''}`);
+                      composerRef.current?.focus();
+                    }}
+                    style={{
+                      padding: '6px 10px',
+                      cursor: 'pointer',
+                      background: i === slashHover ? 'var(--bord)' : 'transparent',
+                      display: 'flex',
+                      gap: '12px',
+                      alignItems: 'baseline',
+                    }}
+                  >
+                    <span style={{ color: 'var(--acc)', fontFamily: 'var(--fm)' }}>
+                      /{cmd.key}{cmd.args ? ` ${cmd.args}` : ''}
+                    </span>
+                    <span style={{ color: 'var(--ink2)' }}>{cmd.description}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
-              placeholder={activeKey ? 'Message Deltron… (Enter to send, Shift+Enter for newline)' : 'Select a session to chat…'}
+              ref={composerRef}
+              placeholder={activeKey ? 'Message Deltron… (Enter to send, Shift+Enter for newline, ↑ for history, / for commands)' : 'Select a session to chat…'}
               value={composer}
-              onChange={e => setComposer(e.target.value)}
+              onChange={e => {
+                setComposer(e.target.value);
+                resetChatInputHistoryNavigation(inputHistoryStateRef.current);
+              }}
               disabled={!activeKey || sending}
               onKeyDown={e => {
+                // Slash palette navigation takes precedence when open.
+                if (slashMatches.length > 0) {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setSlashHover(h => Math.min(h + 1, slashMatches.length - 1));
+                    return;
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setSlashHover(h => Math.max(h - 1, 0));
+                    return;
+                  }
+                  if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const cmd = slashMatches[slashHover];
+                    if (cmd) {
+                      setComposer(`/${cmd.key}${cmd.args ? ' ' : ''}`);
+                    }
+                    return;
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setComposer('');
+                    return;
+                  }
+                }
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   handleSend();
+                  return;
+                }
+                if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && activeKey) {
+                  const target = e.currentTarget;
+                  const result = handleChatInputHistoryKey(inputHistoryStateRef.current, {
+                    key: e.key,
+                    selectionStart: target.selectionStart ?? 0,
+                    selectionEnd: target.selectionEnd ?? 0,
+                    valueLength: target.value.length,
+                    altKey: e.altKey,
+                    ctrlKey: e.ctrlKey,
+                    metaKey: e.metaKey,
+                    shiftKey: e.shiftKey,
+                    isComposing: e.nativeEvent.isComposing,
+                    keyCode: (e.nativeEvent as KeyboardEvent).keyCode ?? 0,
+                  });
+                  if (result.preventDefault) {
+                    e.preventDefault();
+                  }
+                  if (result.handled) {
+                    const recalled = inputHistoryStateRef.current.chatMessage;
+                    setComposer(recalled);
+                    // Move caret to end on up-recall, start on down-clear.
+                    requestAnimationFrame(() => {
+                      if (composerRef.current) {
+                        const pos = result.restoreCaret === 'up' ? recalled.length : 0;
+                        composerRef.current.setSelectionRange(pos, pos);
+                      }
+                    });
+                  }
                 }
               }}
             />

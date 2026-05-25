@@ -1256,8 +1256,18 @@ export default function Chat({ theme: _theme }: ChatProps) {
                     // (gateway calls archiveSessionTranscriptsForSessionDetailed under the hood).
                     await client.call('sessions.delete', { key: active.key });
                     setActiveKey(null);
+                    setErrorMsg(null);
                     refreshSessions();
-                  } catch { /* ignore */ }
+                  } catch (e) {
+                    // The gateway requires operator.admin scope for sessions.delete. UI
+                    // tokens won't have it — surface a clear message instead of silently
+                    // swallowing the error (which was making the button look broken).
+                    const raw = e instanceof Error ? e.message : String(e);
+                    const friendly = /operator\.admin|missing scope/i.test(raw)
+                      ? 'Archive requires operator.admin scope on the gateway token. Ask the gateway admin to grant it, or use the CLI to archive.'
+                      : `Archive failed: ${raw}`;
+                    setErrorMsg(friendly);
+                  }
                 }}
               >Archive Session</button>
             </div>

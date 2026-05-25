@@ -72,7 +72,7 @@ Everything below requires manual confirmation.
 - [FAIL] **⬚ Open in Design** — walks the thread for the most recent assistant reply, extracts HTML (handles ```html fences + bare HTML), navigates to Design with it as the initial source. Status line in Design shows `Loaded HTML from Chat session: <name>` (or "no HTML found" if plain text)``` - FAILED NOTED as bug.
 - [x] **◉ Switch to voice** — navigates to Talk; a dismissible "↳ Continuing from chat: <name>" banner appears at the top of Talk
 - [ ] **Compact Context** / **Reset Session** call the right RPC
-- [FAIL] **Archive Session** (renamed from Delete) — confirm dialog explains the transcript moves to the gateway archive (recoverable). Calls `sessions.delete` (which by default archives the transcript via `archiveSessionTranscriptsForSessionDetailed` server-side)
+- [ ] **Archive Session** (renamed from Delete) — confirm dialog explains the transcript moves to the gateway archive (recoverable). Calls `sessions.delete` (which by default archives the transcript via `archiveSessionTranscriptsForSessionDetailed` server-side). **Note (Sprint 1)**: requires `operator.admin` scope on the gateway token; UI tokens typically don't have it, so the button surfaces a clear message ("Archive requires operator.admin scope…") rather than silently no-op'ing. Needs gateway-side follow-up to expose a user-scope `sessions.archive` RPC.
 - [ ] Disconnected state shows "Not connected to gateway"
 
 ## Talk (Telegraph)

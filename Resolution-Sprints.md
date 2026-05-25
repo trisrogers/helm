@@ -34,6 +34,12 @@ top bar - "connected" font is unreadable white-on-white
 
 ## Resolution log
 
+### Group E — Archive permission UX — ✅ done 2026-05-25 (partial — gateway follow-up needed)
+
+- The Archive button was failing silently because the handler swallowed all errors with `catch { /* ignore */ }`. The gateway returns `INVALID_REQUEST: missing scope: operator.admin` for `sessions.delete` from a UI token.
+- **Fix** — `src/screens/Chat.tsx:1251` — catch the error, set `errorMsg` with a friendly message: "Archive requires operator.admin scope on the gateway token. Ask the gateway admin to grant it, or use the CLI to archive." Generic errors fall through with the raw message prefixed by `Archive failed:`.
+- **Gateway-side follow-up (not in this sprint)**: expose a `sessions.archive` RPC that only requires user scope, OR change `sessions.delete` to permit the owning user to archive their own sessions. Filed implicitly via this entry; raise on openclaw next.
+
 ### Group D — Context bar — ✅ done 2026-05-25
 
 - **Root cause of the 3 fixed values** Tris saw (0/200k, 200k/200k, 1,048,576/200k):

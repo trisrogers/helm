@@ -1,7 +1,6 @@
 # The Helm — manual test checklist
 
-Comprehensive verification list, broken down by screen. Tick items as you
-confirm each behaviour against a real running gateway.
+Comprehensive verification list, broken down by screen. Tick items as you confirm each behaviour against a real running gateway.
 
 ## Pre-flight: what's already been verified
 
@@ -16,37 +15,39 @@ Everything below requires manual confirmation.
 
 ## Topbar (new in Phase 4 polish)
 
-- [ ] Top-right shows, in order: **Default model**, **Theme dropdown**, **Connection chip**, **Clock**
-- [ ] **Default model** value pulls dynamically from the default agent's `model.primary` (was static "Sonnet 4.6"); tooltip shows the source agent
-- [ ] **Theme dropdown** lists full names (Assay Office / Politburo / First Blizzard), not initials; selection persists via the `data-theme` attribute
-- [ ] **Connection chip** shows orange-bordered "Set gateway token →" when no token; click opens an inline edit (input + Save + Cancel) on the same row
-- [ ] Click chip when connected → opens the same inline edit so you can swap tokens; Enter saves, Esc cancels
-- [ ] Connecting → `Connecting…`; bad token → `Auth failed — click to retry`; disconnected → `Disconnected — click to update token`
-- [ ] Sidebar footer is empty (theme + conn moved to topbar — no orphan footer chrome)
+- [x] Top-right shows, in order: **Default model**, **Theme dropdown**, **Connection chip**, **Clock**
+- [x] **Default model** value pulls dynamically from the default agent's `model.primary` (was static "Sonnet 4.6"); tooltip shows the source agent
+- [x] **Theme dropdown** lists full names (Assay Office / Politburo / First Blizzard), not initials; selection persists via the `data-theme` attribute
+- [x] **Connection chip** shows orange-bordered "Set gateway token →" when no token; click opens an inline edit (input + Save + Cancel) on the same row
+- [x] Click chip when connected → opens the same inline edit so you can swap tokens; Enter saves, Esc cancels
+- [x] Connecting → `Connecting…`; bad token → `Auth failed — click to retry`; disconnected → `Disconnected — click to update token`
+- [x] Sidebar footer is empty (theme + conn moved to topbar — no orphan footer chrome)
 
 ## Setup
 
-- [ ] Token paste via topbar connection chip → status goes `Connecting…` → `Connected · <version>`
-- [ ] Bad token → `Auth failed — click to retry`; chip click lets you re-edit
+- [x] Token paste via topbar connection chip → status goes `Connecting…` → `Connected · <version>`
+- [x] Bad token → `Auth failed — click to retry`; chip click lets you re-edit
 - [ ] Stop the gateway mid-session → `Disconnected`, then auto-reconnect with backoff when the gateway returns
 
 ## Chat (Dispatches)
 
 ### Session list
 
-- [ ] Session list populates; sort newest-updated first
-- [ ] Search box filters by title / preview / key
-- [ ] **Agent filter chips** appear above the list when there are 2+ agents in the session set; "All" + one chip per agent; click filters
-- [ ] **Channel filter chips** appear when there are 2+ channels (Direct / Telegram / Slack / Email / WebChat); click filters with icon
-- [ ] Selection survives navigation away and back (persisted in `localStorage` under `helm:chat:activeKey`)
-- [ ] If the persisted key no longer exists in the session list (deleted/archived), falls back to most-recent session silently rather than showing an empty thread
-- [ ] `+ New` creates a session against the first agent and selects it
+- [x] Session list populates; sort newest-updated first
+- [x] Search box filters by title / preview / key
+- [FAIL] **Agent filter chips** appear above the list when there are 2+ agents in the session set; "All" + one chip per agent; click filters - FAILED NOTED as bug.
+- [x] **Channel filter chips** appear when there are 2+ channels (Direct / Telegram / Slack / Email / WebChat); click filters with icon
+- [FAIL] Selection survives navigation away and back (persisted in `localStorage` under `helm:chat:activeKey`) - FAILED NOTED as bug.
+- [FAIL] If the persisted key no longer exists in the session list (deleted/archived), falls back to most-recent session silently rather than showing an empty thread  - FAILED NOTED as bug.
+- [x] `+ New` creates a session against the first agent and selects it
 
 ### Thread + composer
 
-- [ ] Click a session → history loads via `chat.history` (not `sessions.get` — the latter returns empty for dashboard sessions)
-- [ ] Thread auto-scrolls to bottom on history load and on new messages
-- [ ] Send a message → **user message appears optimistically** (no 1.5s wait for the echo); composer clears immediately
+- [x] Thread auto-scrolls to bottom on history load and on new messages
+- [x] Send a message → **user message appears optimistically** (no 1.5s wait for the echo); composer clears immediately
+
+- Not sure how to test these - need test instructions.
+- [ ] Click a session → history loads via `chat.history` (not `sessions.get` — the latter returns empty for dashboard sessions) 
 - [ ] User echo from `session.message` replaces the optimistic row (matched by text); no double-render
 - [ ] Send failure → optimistic row removed, error shown, composer restored with your text
 - [ ] Assistant reply streams in token-by-token from `agent` events (`stream: 'assistant'`, cumulative `data.text`)
@@ -54,20 +55,23 @@ Everything below requires manual confirmation.
 - [ ] **Streaming indicator clears** the moment `agent.lifecycle.end` or `chat.final` arrives — no stuck "thinking…" placeholder
 - [ ] `pendingRunId`-based fallback bubble shows "thinking…" only between `sessions.send` and the first text delta, then clears
 - [ ] `chat.final` swaps the streaming placeholder for the canonical projected message (proper id, content-block resolved)
-- [ ] `Enter` sends; `Shift+Enter` makes a newline
+- [x] `Enter` sends; `Shift+Enter` makes a newline
+- [x] After `Enter` send, focus stays in composer (Sprint 1 fix)
+- [x] Selecting or creating a session auto-focuses the composer (Sprint 1 fix)
+- [x] Tools checkbox label reads **Show Tools** (Sprint 1 fix)
 
 ### Info panel (right rail)
 
-- [ ] Info panel matches active session (model, channel, ctx tokens, updated relative time)
-- [ ] Context bar reflects `contextTokens` from `sessions.list` when available; otherwise falls back to char/4 estimate over the visible thread with an **(est.)** badge next to the title
-- [ ] `Abort` enabled only while `hasActiveRun`; click cancels
+- [x] Info panel matches active session (model, channel, ctx tokens, updated relative time)
+- [FAIL] Context bar reflects `contextTokens` from `sessions.list` when available; otherwise falls back to char/4 estimate over the visible thread with an **(est.)** badge next to the title - FAILED NOTED as bug.
+- [x] `Abort` enabled only while `hasActiveRun`; click cancels
 
 ### Info panel actions
 
-- [ ] **⬚ Open in Design** — walks the thread for the most recent assistant reply, extracts HTML (handles ```html fences + bare HTML), navigates to Design with it as the initial source. Status line in Design shows `Loaded HTML from Chat session: <name>` (or "no HTML found" if plain text)
-- [ ] **◉ Switch to voice** — navigates to Talk; a dismissible "↳ Continuing from chat: <name>" banner appears at the top of Talk
+- [FAIL] **⬚ Open in Design** — walks the thread for the most recent assistant reply, extracts HTML (handles ```html fences + bare HTML), navigates to Design with it as the initial source. Status line in Design shows `Loaded HTML from Chat session: <name>` (or "no HTML found" if plain text)``` - FAILED NOTED as bug.
+- [x] **◉ Switch to voice** — navigates to Talk; a dismissible "↳ Continuing from chat: <name>" banner appears at the top of Talk
 - [ ] **Compact Context** / **Reset Session** call the right RPC
-- [ ] **Archive Session** (renamed from Delete) — confirm dialog explains the transcript moves to the gateway archive (recoverable). Calls `sessions.delete` (which by default archives the transcript via `archiveSessionTranscriptsForSessionDetailed` server-side)
+- [FAIL] **Archive Session** (renamed from Delete) — confirm dialog explains the transcript moves to the gateway archive (recoverable). Calls `sessions.delete` (which by default archives the transcript via `archiveSessionTranscriptsForSessionDetailed` server-side)
 - [ ] Disconnected state shows "Not connected to gateway"
 
 ## Talk (Telegraph)

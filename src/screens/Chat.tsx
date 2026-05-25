@@ -523,6 +523,13 @@ export default function Chat({ theme: _theme }: ChatProps) {
     setPinnedTick(t => t + 1);
   }, [activeKey]);
 
+  // Auto-focus composer when switching to / creating a session — saves a click
+  // before the user can start typing.
+  useEffect(() => {
+    if (!activeKey) return;
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [activeKey]);
+
   // Mirror the React state the input-history module reads through. It mutates
   // its argument in place, so we keep a single ref instead of bouncing through
   // setState — pinnedTick re-runs the read paths.
@@ -1000,7 +1007,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
                 onChange={e => setShowTools(e.target.checked)}
                 style={{ margin: 0 }}
               />
-              Tools
+              Show Tools
             </label>
             {errorMsg && (
               <span style={{ marginLeft: '8px', color: 'var(--err)' }}>{errorMsg}</span>
@@ -1108,6 +1115,10 @@ export default function Chat({ theme: _theme }: ChatProps) {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   handleSend();
+                  // Keep focus on the composer so the user can keep typing
+                  // without re-clicking. handleSend clears the value but a
+                  // disabled→re-enabled cycle during `sending` can drop focus.
+                  requestAnimationFrame(() => composerRef.current?.focus());
                   return;
                 }
                 if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && activeKey) {

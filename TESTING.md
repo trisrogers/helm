@@ -63,7 +63,8 @@ Everything below requires manual confirmation.
 ### Info panel (right rail)
 
 - [x] Info panel matches active session (model, channel, ctx tokens, updated relative time)
-- [FAIL] Context bar reflects `contextTokens` from `sessions.list` when available; otherwise falls back to char/4 estimate over the visible thread with an **(est.)** badge next to the title - FAILED NOTED as bug.
+- [x] Context bar reflects `contextTokens` from `sessions.list` when available; otherwise falls back to char/4 estimate over the visible thread with an **(est.)** badge next to the title (Sprint 1 fix: stopped falling through to cumulative `totalTokens`)
+- [ ] Context bar **denominator** matches the active session's model context window (looked up from `modelCatalog.contextWindow`), not a hardcoded 200 k (Sprint 1 fix — needs visual confirm with e.g. Sonnet 4.6 = 200 k vs Opus 4.7 1M = 1,048,576)
 - [x] `Abort` enabled only while `hasActiveRun`; click cancels
 
 ### Info panel actions

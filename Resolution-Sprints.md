@@ -34,6 +34,14 @@ top bar - "connected" font is unreadable white-on-white
 
 ## Resolution log
 
+### Group D — Context bar — ✅ done 2026-05-25
+
+- **Root cause of the 3 fixed values** Tris saw (0/200k, 200k/200k, 1,048,576/200k):
+  - Numerator was falling through `contextTokens ?? totalTokens ?? estimate`. `totalTokens` is **cumulative lifetime usage** for the session, not current-context — that's where 1,048,576 came from.
+  - Denominator was a hardcoded `200_000` regardless of model.
+- **Fix** — `src/screens/Chat.tsx:741` — dropped `totalTokens` from the chain (`contextTokens` → char/4 estimate only); look up the active session's model in `modelCatalog` and use its `contextWindow` as denominator (200k fallback if catalog entry is missing).
+- Typecheck: clean.
+
 ### Group G — Theme polish — ✅ done 2026-05-25 (needs visual confirm)
 
 - **Assay handwriting +50%** — `src/index.css:1115` — bumped session-preview / info-val / msg-time from 14 px → 21 px, added 18 px rule for user message body.

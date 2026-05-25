@@ -745,18 +745,29 @@ export default function Chat({ theme: _theme }: ChatProps) {
 
   const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
 
-  // Context-usage bar — prefer the gateway's contextTokens, fall back to
-  // totalTokens, fall back to a rough char/4 estimate over the visible
-  // thread so the bar moves with the live conversation even when the
-  // gateway hasn't refreshed sessionRow stats yet.
+  // Context-usage bar.
+  //
+  // Sprint 1 fix: the prior fallback chain (contextTokens ?? totalTokens ??
+  // estimate) meant a session with no live contextTokens fell through to
+  // *cumulative* totalTokens — that's how Tris was seeing 1,048,576/200,000.
+  // And the denominator was a hardcoded 200k regardless of model. Now:
+  //
+  //   numerator   = contextTokens (live) → char/4 estimate (offline fallback)
+  //                 totalTokens is NOT used — it's cumulative lifetime usage.
+  //   denominator = model's contextWindow from the catalog, else 200k.
   const charEstimateTokens = useMemo(
     () => Math.ceil(messages.reduce((n, m) => n + m.text.length, 0) / 4),
     [messages],
   );
-  const contextUsed = active?.contextTokens ?? active?.totalTokens ?? charEstimateTokens;
-  const contextMax = 200_000;
+  const activeModelEntry = useMemo(() => {
+    if (!active?.model) return null;
+    const wanted = active.model;
+    return modelCatalog.find(m => m.id === wanted || m.alias === wanted) ?? null;
+  }, [active?.model, modelCatalog]);
+  const contextMax = activeModelEntry?.contextWindow ?? 200_000;
+  const contextUsed = active?.contextTokens ?? charEstimateTokens;
   const ctxPct = Math.min(100, (contextUsed / contextMax) * 100);
-  const ctxIsEstimate = (active?.contextTokens ?? active?.totalTokens) == null;
+  const ctxIsEstimate = active?.contextTokens == null;
 
   /* ── render ──────────────────────────────────────────────────── */
 

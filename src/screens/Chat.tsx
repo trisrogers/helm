@@ -23,6 +23,12 @@ import {
   parseSlashInput,
   type SlashCommandDef,
 } from '../lib/chat/slash-commands-native';
+import {
+  getCachedSessions,
+  setCachedSessions,
+  getCachedHistory,
+  setCachedHistory,
+} from '../lib/chat/session-cache';
 
 interface SessionMessageEvent {
   sessionKey?: string;
@@ -280,7 +286,11 @@ function persistActiveKey(key: string | null) {
 
 export default function Chat({ theme: _theme }: ChatProps) {
   const { client, status } = useGateway();
-  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+  // Seed from the in-memory cache so a re-mount renders instantly while
+  // the background refresh chases the gateway.
+  const [sessions, setSessions] = useState<SessionRow[] | null>(
+    () => getCachedSessions<SessionRow>()?.rows ?? null,
+  );
   const [agents, setAgents] = useState<AgentRow[]>([]);
   // Seeded from localStorage so the selection survives navigation away from
   // the Chat screen. setActiveKey is wrapped so every change syncs back.
@@ -366,6 +376,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
       const rows = result.sessions ?? [];
       rows.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
       setSessions(rows);
+      setCachedSessions(rows);
       if (result.defaults !== undefined) {
         setSessionsDefaults(result.defaults ?? null);
       }
@@ -406,10 +417,22 @@ export default function Chat({ theme: _theme }: ChatProps) {
   useEffect(() => {
     if (!client || status !== 'connected' || !activeKey) return;
     let cancelled = false;
-    setLoadingMsgs(true);
-    setMessages([]);
     acceptedKeysRef.current = new Set([activeKey]);
     finalizedRunsRef.current = new Set();
+
+    // Render any cached history immediately so switching sessions feels
+    // instant. The background refresh below keeps the thread current.
+    const cached = getCachedHistory<RawMessage>(activeKey);
+    if (cached) {
+      const projected = cached
+        .map(m => projectMsg(m, activeKey))
+        .filter((m): m is DisplayMsg => m !== null);
+      setMessages(projected);
+      setLoadingMsgs(false);
+    } else {
+      setMessages([]);
+      setLoadingMsgs(true);
+    }
 
     (async () => {
       try {
@@ -419,7 +442,9 @@ export default function Chat({ theme: _theme }: ChatProps) {
         // CLI imports and returns display-projected messages.
         const res = await client.call<{ messages: RawMessage[] }>('chat.history', { sessionKey: activeKey, limit: 200 });
         if (cancelled) return;
-        const msgs = (res.messages ?? [])
+        const raw = res.messages ?? [];
+        setCachedHistory(activeKey, raw);
+        const msgs = raw
           .map(m => projectMsg(m, activeKey))
           .filter((m): m is DisplayMsg => m !== null);
         setMessages(msgs);
@@ -766,6 +791,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
 
   const filtered = useMemo(() => {
     const list = sessions ?? [];
+    const q = search.trim().toLowerCase();
     return list.filter(s => {
       // Hide empty stub sessions unless the user opts in, but always keep the
       // currently-active row visible so a brand-new session doesn't vanish
@@ -776,13 +802,8 @@ export default function Chat({ theme: _theme }: ChatProps) {
       }
       if (agentFilter !== 'all' && (s.agentRuntime?.agentId ?? '') !== agentFilter) return false;
       if (channelFilter !== 'all' && normalizeChannel(s.lastChannel ?? s.channel) !== channelFilter) return false;
-      if (search.trim()) {
-        const q = search.trim().toLowerCase();
-        // Sprint 1: also match the agent id, model, and channel so a user
-        // searching for "claude" or "telegram" finds matching sessions.
-        // Deeper content search (full message history) requires the LRU
-        // cache landing in Group F — best-effort scan there once available.
-        if (!(
+      if (q) {
+        const meta = (
           (s.displayName ?? '').toLowerCase().includes(q) ||
           (s.derivedTitle ?? '').toLowerCase().includes(q) ||
           (s.lastMessagePreview ?? '').toLowerCase().includes(q) ||
@@ -790,7 +811,22 @@ export default function Chat({ theme: _theme }: ChatProps) {
           (s.model ?? '').toLowerCase().includes(q) ||
           (s.lastChannel ?? s.channel ?? '').toLowerCase().includes(q) ||
           s.key.toLowerCase().includes(q)
-        )) return false;
+        );
+        if (meta) return true;
+        // Best-effort content search: scan cached history if we have it.
+        // No fetch is triggered here — only sessions the user has visited
+        // recently (LRU cap 10) will be in cache. This widens search
+        // coverage without hammering the gateway.
+        if (q.length >= 3) {
+          const cached = getCachedHistory<RawMessage>(s.key);
+          if (cached) {
+            for (const m of cached) {
+              const t = typeof m.text === 'string' ? m.text : extractText(m.content);
+              if (t.toLowerCase().includes(q)) return true;
+            }
+          }
+        }
+        return false;
       }
       return true;
     });

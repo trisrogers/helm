@@ -34,6 +34,16 @@ top bar - "connected" font is unreadable white-on-white
 
 ## Resolution log
 
+### Group F — Performance caching — ✅ done 2026-05-25
+
+- New module **`src/lib/chat/session-cache.ts`** — module-level in-memory caches that survive Chat-screen unmount/remount:
+  - `getCachedSessions / setCachedSessions` — single snapshot of the sessions list (rows + fetchedAt).
+  - `getCachedHistory / setCachedHistory` — LRU map keyed by session key, cap **10**. Re-accessing a key bumps it to MRU position via Map insertion-order semantics.
+- **Sessions list** — `src/screens/Chat.tsx:258` — `useState` initialiser reads from cache so a remount renders the previous list instantly; background `sessions.list` then refreshes both UI and cache. Net: navigating away/back to Chat is no longer a 5–10 s wait on the gateway.
+- **History** — `src/screens/Chat.tsx:367` — on session switch, render any cached history immediately (clear `loadingMsgs`); fire `chat.history` in the background and replace the cached version + UI when it returns. Switching to a recently-visited session is now instant.
+- **Best-effort content search** — `src/screens/Chat.tsx:741` — when the search query is ≥3 chars and a session's history is cached, scans the cached messages for matches. Doesn't trigger fetches; widens search coverage for free over time as the user navigates. (Full server-side full-text search remains a gateway follow-up.)
+- Typecheck: clean.
+
 ### Group C — State/persistence bugs — ✅ done 2026-05-25
 
 - **activeKey alias mismatch on reload** — `src/screens/Chat.tsx:340` — when the persisted key didn't match any row exactly, refreshSessions silently fell through to row[0]. Now first tries to resolve the alias by matching the trailing segment (UUID) against any row's key, only falling through to row[0] as last resort.

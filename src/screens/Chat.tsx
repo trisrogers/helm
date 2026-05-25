@@ -225,6 +225,28 @@ function channelIcon(ch?: string): string {
   return '◇';
 }
 
+/** Render a short, human-friendly label for a session row.
+ *  The raw key (`agent:main:dashboard:<uuid>`) is too long for the
+ *  sidebar — peel the prefix and shrink the uuid to its first 6 chars.
+ *  Prefer the server-provided displayName / derivedTitle when present. */
+function shortenSessionLabel(row: { key: string; displayName?: string; derivedTitle?: string; lastMessagePreview?: string }): string {
+  if (row.displayName && row.displayName.trim()) return row.displayName.trim();
+  if (row.derivedTitle && row.derivedTitle.trim()) return row.derivedTitle.trim();
+  // Fall back to a snippet of the last message if available — usually more
+  // useful than the opaque key.
+  const preview = row.lastMessagePreview?.trim();
+  if (preview) {
+    return preview.length > 48 ? `${preview.slice(0, 48)}…` : preview;
+  }
+  // Last resort: derive from the key. agent:main:dashboard:<uuid> →
+  // dashboard:<uuid-prefix>.
+  const parts = row.key.split(':');
+  const tail = parts[parts.length - 1];
+  const shortUuid = tail.length > 8 ? tail.slice(0, 6) : tail;
+  const channel = parts.length >= 3 ? parts[parts.length - 2] : '';
+  return channel ? `${channel}:${shortUuid}` : shortUuid;
+}
+
 /** Normalise raw channel strings so the filter chips have a stable set
  *  rather than one chip per casing/variant ("Direct" / "direct" / "ui"). */
 function normalizeChannel(ch: string | undefined): string {
@@ -732,10 +754,17 @@ export default function Chat({ theme: _theme }: ChatProps) {
       if (channelFilter !== 'all' && normalizeChannel(s.lastChannel ?? s.channel) !== channelFilter) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
+        // Sprint 1: also match the agent id, model, and channel so a user
+        // searching for "claude" or "telegram" finds matching sessions.
+        // Deeper content search (full message history) requires the LRU
+        // cache landing in Group F — best-effort scan there once available.
         if (!(
           (s.displayName ?? '').toLowerCase().includes(q) ||
           (s.derivedTitle ?? '').toLowerCase().includes(q) ||
           (s.lastMessagePreview ?? '').toLowerCase().includes(q) ||
+          (s.agentRuntime?.agentId ?? '').toLowerCase().includes(q) ||
+          (s.model ?? '').toLowerCase().includes(q) ||
+          (s.lastChannel ?? s.channel ?? '').toLowerCase().includes(q) ||
           s.key.toLowerCase().includes(q)
         )) return false;
       }
@@ -793,17 +822,21 @@ export default function Chat({ theme: _theme }: ChatProps) {
             {agentOptions.length > 1 && (
               <div className="session-filter-row">
                 <span className="session-filter-label">Agent</span>
-                <button
-                  className={`chip ${agentFilter === 'all' ? 'chip-on' : ''}`}
-                  onClick={() => setAgentFilter('all')}
-                >All</button>
-                {agentOptions.map(id => (
-                  <button
-                    key={id}
-                    className={`chip ${agentFilter === id ? 'chip-on' : ''}`}
-                    onClick={() => setAgentFilter(id)}
-                  >{id}</button>
-                ))}
+                {/* Sprint 1: dropdown replaces chip row. Future multi-user
+                 *  phase will need to lock this to the current user's agents. */}
+                <select
+                  className="session-filter-select"
+                  value={agentFilter}
+                  onChange={e => setAgentFilter(e.target.value)}
+                  title="Filter sessions by agent"
+                >
+                  <option value="all">All agents</option>
+                  {agentOptions.map(id => {
+                    const agent = agents.find(a => a.id === id);
+                    const label = agent?.identity?.name ?? agent?.name ?? id;
+                    return <option key={id} value={id}>{label}</option>;
+                  })}
+                </select>
               </div>
             )}
             {channelOptions.length > 1 && (
@@ -845,9 +878,10 @@ export default function Chat({ theme: _theme }: ChatProps) {
                 key={s.key}
                 className={`session-item ${s.key === activeKey ? 'active' : ''}`}
                 onClick={() => setActiveKey(s.key)}
+                title={s.key}
               >
                 <div className="session-title">
-                  {s.displayName ?? s.derivedTitle ?? s.key}
+                  {shortenSessionLabel(s)}
                 </div>
                 {s.lastMessagePreview && (
                   <div className="session-preview">{s.lastMessagePreview}</div>

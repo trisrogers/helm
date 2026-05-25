@@ -34,8 +34,9 @@ Everything below requires manual confirmation.
 ### Session list
 
 - [x] Session list populates; sort newest-updated first
-- [x] Search box filters by title / preview / key
-- [FAIL] **Agent filter chips** appear above the list when there are 2+ agents in the session set; "All" + one chip per agent; click filters - FAILED NOTED as bug.
+- [x] Search box filters by title / preview / key (Sprint 1: also matches agent id, model, channel; deeper content search pending Group F cache)
+- [ ] Session row title shows a short label (display name → derived title → snippet of preview → `<channel>:<uuid6>`) — full key shown on hover (Sprint 1 fix)
+- [ ] **Agent filter dropdown** (Sprint 1: replaced chips with `<select>`) appears above the list when there are 2+ agents; "All agents" default + one option per agent; pick filters. Agent label uses identity.name / name / id in that order.
 - [x] **Channel filter chips** appear when there are 2+ channels (Direct / Telegram / Slack / Email / WebChat); click filters with icon
 - [FAIL] Selection survives navigation away and back (persisted in `localStorage` under `helm:chat:activeKey`) - FAILED NOTED as bug.
 - [FAIL] If the persisted key no longer exists in the session list (deleted/archived), falls back to most-recent session silently rather than showing an empty thread  - FAILED NOTED as bug.

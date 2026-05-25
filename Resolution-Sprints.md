@@ -34,6 +34,14 @@ top bar - "connected" font is unreadable white-on-white
 
 ## Resolution log
 
+### Group B — Session list filtering & search — ✅ done 2026-05-25
+
+- **Agent filter dropdown** — `src/screens/Chat.tsx:781` — replaced the chip row with a `<select>` (uses `identity.name → name → id` for the option label). Future multi-user phase will need to lock this to the current user's agents.
+- **Short session names** — added `shortenSessionLabel()` helper in `Chat.tsx:228`; session row now shows `displayName → derivedTitle → preview snippet (≤48 chars) → <channel>:<uuid6>`. Full key still on hover via `title=`.
+- **Search expanded** to also match agent id, model name, and channel — so "telegram" or "claude" surfaces relevant sessions. Deeper full-message-content search is deferred to Group F, which will land an LRU history cache that the search can scan opportunistically.
+- New CSS: `.session-filter-select` styled to match the rest of the sidebar.
+- Typecheck: clean.
+
 ### Group E — Archive permission UX — ✅ done 2026-05-25 (partial — gateway follow-up needed)
 
 - The Archive button was failing silently because the handler swallowed all errors with `catch { /* ignore */ }`. The gateway returns `INVALID_REQUEST: missing scope: operator.admin` for `sessions.delete` from a UI token.

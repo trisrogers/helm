@@ -34,6 +34,15 @@ top bar - "connected" font is unreadable white-on-white
 
 ## Resolution log
 
+### Group C — State/persistence bugs — ✅ done 2026-05-25
+
+- **activeKey alias mismatch on reload** — `src/screens/Chat.tsx:340` — when the persisted key didn't match any row exactly, refreshSessions silently fell through to row[0]. Now first tries to resolve the alias by matching the trailing segment (UUID) against any row's key, only falling through to row[0] as last resort.
+- **Empty stub sessions** — root cause is `+ New` calls `sessions.create` immediately, even if the user never sends. New **Show empty stubs** toggle (defaults OFF) hides rows where `lastMessagePreview` is empty, except for the currently-active session (so a brand-new session doesn't vanish before you can use it). Persisted at `helm:chat:showEmpty`. Cleaner permanent fix would be to defer session creation until first send — flagged as follow-up.
+- **Open in Design HTML extraction** — two fixes:
+  1. `src/screens/Chat.tsx:1243` now walks **all** assistant messages back-to-front and picks the first that yields HTML, instead of only checking the latest. (A follow-up "done!" reply was shadowing the earlier message that had the HTML.)
+  2. `src/lib/handoff.ts:89` extractor now: walks every fenced block (any language tag including bare ```, ~~~), prefers explicit `html`/`htm`, sniffs unlabeled blocks; falls back to slicing `<!doctype>…</html>` / `<html>…</html>` / `<body>…</body>` out of mixed prose; then to the whole-message fallback.
+- Typecheck: clean.
+
 ### Group B — Session list filtering & search — ✅ done 2026-05-25
 
 - **Agent filter dropdown** — `src/screens/Chat.tsx:781` — replaced the chip row with a `<select>` (uses `identity.name → name → id` for the option label). Future multi-user phase will need to lock this to the current user's agents.

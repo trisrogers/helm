@@ -38,8 +38,9 @@ Everything below requires manual confirmation.
 - [ ] Session row title shows a short label (display name → derived title → snippet of preview → `<channel>:<uuid6>`) — full key shown on hover (Sprint 1 fix)
 - [ ] **Agent filter dropdown** (Sprint 1: replaced chips with `<select>`) appears above the list when there are 2+ agents; "All agents" default + one option per agent; pick filters. Agent label uses identity.name / name / id in that order.
 - [x] **Channel filter chips** appear when there are 2+ channels (Direct / Telegram / Slack / Email / WebChat); click filters with icon
-- [FAIL] Selection survives navigation away and back (persisted in `localStorage` under `helm:chat:activeKey`) - FAILED NOTED as bug.
-- [FAIL] If the persisted key no longer exists in the session list (deleted/archived), falls back to most-recent session silently rather than showing an empty thread  - FAILED NOTED as bug.
+- [ ] Selection survives navigation away and back (persisted in `localStorage` under `helm:chat:activeKey`) — Sprint 1 fix: alias mismatch now resolves by trailing UUID segment.
+- [ ] If the persisted key no longer exists in the session list (deleted/archived), falls back to most-recent session silently rather than showing an empty thread
+- [ ] **Show empty stubs** toggle (default OFF) — empty sessions are hidden unless toggled on; the active session is always visible. Persists in `localStorage` under `helm:chat:showEmpty` (Sprint 1 fix for stub clutter)
 - [x] `+ New` creates a session against the first agent and selects it
 
 ### Thread + composer
@@ -70,7 +71,7 @@ Everything below requires manual confirmation.
 
 ### Info panel actions
 
-- [FAIL] **⬚ Open in Design** — walks the thread for the most recent assistant reply, extracts HTML (handles ```html fences + bare HTML), navigates to Design with it as the initial source. Status line in Design shows `Loaded HTML from Chat session: <name>` (or "no HTML found" if plain text)``` - FAILED NOTED as bug.
+- [ ] **⬚ Open in Design** — walks back through assistant replies (Sprint 1 fix: was only checking the very latest), picks the first that yields HTML. Extractor handles fenced blocks (```html, ```HTML, ~~~), bare `<!doctype>` / `<html>` / `<body>` docs sliced out of mixed prose, and whole-message HTML. Status line in Design shows `Loaded HTML from Chat session: <name>` (or "no HTML found" if no usable HTML)
 - [x] **◉ Switch to voice** — navigates to Talk; a dismissible "↳ Continuing from chat: <name>" banner appears at the top of Talk
 - [ ] **Compact Context** / **Reset Session** call the right RPC
 - [ ] **Archive Session** (renamed from Delete) — confirm dialog explains the transcript moves to the gateway archive (recoverable). Calls `sessions.delete` (which by default archives the transcript via `archiveSessionTranscriptsForSessionDetailed` server-side). **Note (Sprint 1)**: requires `operator.admin` scope on the gateway token; UI tokens typically don't have it, so the button surfaces a clear message ("Archive requires operator.admin scope…") rather than silently no-op'ing. Needs gateway-side follow-up to expose a user-scope `sessions.archive` RPC.

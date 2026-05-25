@@ -84,11 +84,34 @@ export function looksLikeHTML(text: string): boolean {
   return /<([a-z][a-z0-9]*)\b[^>]*>[\s\S]*<\/\1>/i.test(t);
 }
 
-/** Extract HTML from an assistant message — strips ```html``` fences if
- *  present, otherwise returns the message verbatim when it looks like HTML. */
+/** Extract HTML from an assistant message — looks for fenced code blocks
+ *  first (any language tag), picks the first one that looks like HTML;
+ *  otherwise tries to slice out an HTML doc from the surrounding prose;
+ *  falls back to returning the trimmed message when it already looks
+ *  like an HTML document. Returns null if nothing usable was found. */
 export function extractHTMLFromAssistantText(text: string): string | null {
-  const fenceMatch = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
-  if (fenceMatch && looksLikeHTML(fenceMatch[1])) return fenceMatch[1].trim();
+  if (!text) return null;
+
+  // 1) Scan every fenced block (```html, ```HTML, ```, ~~~) and return the
+  //    first one whose body looks like HTML. Walking all blocks fixes the
+  //    case where Claude writes an explanation block first, then the HTML.
+  const fenceRe = /(?:```|~~~)\s*([A-Za-z0-9]*)\s*\n([\s\S]*?)\n(?:```|~~~)/g;
+  let m: RegExpExecArray | null;
+  while ((m = fenceRe.exec(text)) !== null) {
+    const lang = m[1]?.toLowerCase() ?? '';
+    const body = m[2] ?? '';
+    // Explicit html/htm language tag wins; otherwise sniff.
+    if (lang === 'html' || lang === 'htm') return body.trim();
+    if (!lang && looksLikeHTML(body)) return body.trim();
+  }
+
+  // 2) Try to slice a bare HTML doc out of mixed prose: from the first
+  //    <!doctype/<html/<body to the last </html> or </body>.
+  const docMatch = text.match(/(<!doctype html[\s\S]*?<\/html>|<html\b[\s\S]*?<\/html>|<body\b[\s\S]*?<\/body>)/i);
+  if (docMatch) return docMatch[1].trim();
+
+  // 3) Whole-message fallback if the trimmed text itself looks like HTML.
   if (looksLikeHTML(text)) return text.trim();
+
   return null;
 }

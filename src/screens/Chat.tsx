@@ -264,6 +264,7 @@ function normalizeChannel(ch: string | undefined): string {
 
 const CHAT_ACTIVE_KEY_STORAGE = 'helm:chat:activeKey';
 const SHOW_TOOLS_STORAGE = 'helm:chat:showTools';
+const SHOW_EMPTY_STORAGE = 'helm:chat:showEmpty';
 
 function readStoredActiveKey(): string | null {
   try { return localStorage.getItem(CHAT_ACTIVE_KEY_STORAGE) || null; }
@@ -306,6 +307,15 @@ export default function Chat({ theme: _theme }: ChatProps) {
   const setShowTools = useCallback((v: boolean) => {
     setShowToolsState(v);
     try { localStorage.setItem(SHOW_TOOLS_STORAGE, v ? '1' : '0'); } catch { /* quota */ }
+  }, []);
+  // Default: hide empty stub sessions. Tris's gateway accumulates them
+  // every time the user clicks `+ New` without sending anything.
+  const [showEmpty, setShowEmptyState] = useState<boolean>(() => {
+    try { return localStorage.getItem(SHOW_EMPTY_STORAGE) === '1'; } catch { return false; }
+  });
+  const setShowEmpty = useCallback((v: boolean) => {
+    setShowEmptyState(v);
+    try { localStorage.setItem(SHOW_EMPTY_STORAGE, v ? '1' : '0'); } catch { /* quota */ }
   }, []);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogEntry[]>([]);
   /** Local override cache — reflects in-flight `sessions.patch` calls before
@@ -360,10 +370,17 @@ export default function Chat({ theme: _theme }: ChatProps) {
         setSessionsDefaults(result.defaults ?? null);
       }
       // Keep the persisted selection if it's still a known session; otherwise
-      // fall back to the most-recently-updated one. Without this fallback,
-      // an obsolete stored key would silently render an empty thread.
+      // try to resolve a client-side alias to its canonical row (Sprint 1
+      // fix — was falling back to row[0] when the alias didn't match
+      // exactly), and only as a last resort silently swap to the newest row.
       setActiveKey(prev => {
-        if (prev && rows.some(r => r.key === prev)) return prev;
+        if (!prev) return rows[0]?.key ?? null;
+        if (rows.some(r => r.key === prev)) return prev;
+        // Alias lookup: match by the trailing UUID-ish segment of the key,
+        // which survives the canonical/alias rename.
+        const prevTail = prev.split(':').pop() ?? prev;
+        const aliasMatch = rows.find(r => r.key.endsWith(prevTail));
+        if (aliasMatch) return aliasMatch.key;
         return rows[0]?.key ?? null;
       });
     } catch (e) {
@@ -750,6 +767,13 @@ export default function Chat({ theme: _theme }: ChatProps) {
   const filtered = useMemo(() => {
     const list = sessions ?? [];
     return list.filter(s => {
+      // Hide empty stub sessions unless the user opts in, but always keep the
+      // currently-active row visible so a brand-new session doesn't vanish
+      // before the first message lands.
+      if (!showEmpty && s.key !== activeKey) {
+        const preview = (s.lastMessagePreview ?? '').trim();
+        if (!preview) return false;
+      }
       if (agentFilter !== 'all' && (s.agentRuntime?.agentId ?? '') !== agentFilter) return false;
       if (channelFilter !== 'all' && normalizeChannel(s.lastChannel ?? s.channel) !== channelFilter) return false;
       if (search.trim()) {
@@ -770,7 +794,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
       }
       return true;
     });
-  }, [sessions, search, agentFilter, channelFilter]);
+  }, [sessions, search, agentFilter, channelFilter, showEmpty, activeKey]);
 
   const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
 
@@ -855,6 +879,24 @@ export default function Chat({ theme: _theme }: ChatProps) {
                 ))}
               </div>
             )}
+          </div>
+        )}
+        {sessions && sessions.length > 0 && (
+          <div className="session-filters" style={{ borderTop: 0 }}>
+            <div className="session-filter-row">
+              <label
+                style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '10px', color: 'var(--ink2)', cursor: 'pointer' }}
+                title="Stub sessions with no messages are hidden by default to keep the list focused"
+              >
+                <input
+                  type="checkbox"
+                  checked={showEmpty}
+                  onChange={e => setShowEmpty(e.target.checked)}
+                  style={{ margin: 0 }}
+                />
+                Show empty stubs
+              </label>
+            </div>
           </div>
         )}
         <div className="session-list">
@@ -1241,11 +1283,18 @@ export default function Chat({ theme: _theme }: ChatProps) {
                 style={{ width: '100%', fontSize: '11px' }}
                 title="Send the latest assistant HTML (if any) to the Design canvas and switch screens"
                 onClick={() => {
-                  // Walk back through messages for the most recent assistant reply
-                  // and pull HTML out of it. Falls through to empty handoff so the
-                  // user lands on Design with their session context noted.
-                  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
-                  const html = lastAssistant ? extractHTMLFromAssistantText(lastAssistant.text) : null;
+                  // Walk back through assistant replies and pick the most
+                  // recent one that actually yields HTML. The previous
+                  // implementation only looked at the latest assistant
+                  // message; a follow-up confirmation ("Done!") would then
+                  // shadow the earlier message that contained the HTML.
+                  let html: string | null = null;
+                  for (let i = messages.length - 1; i >= 0; i--) {
+                    const m = messages[i];
+                    if (m.role !== 'assistant') continue;
+                    const found = extractHTMLFromAssistantText(m.text);
+                    if (found) { html = found; break; }
+                  }
                   const label = active.displayName ?? active.derivedTitle ?? active.key;
                   navigateTo('design', {
                     ...(html ? { html } : {}),

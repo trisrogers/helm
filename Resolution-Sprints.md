@@ -34,6 +34,15 @@ top bar - "connected" font is unreadable white-on-white
 
 ## Resolution log
 
+### Group G — Theme polish — ✅ done 2026-05-25 (needs visual confirm)
+
+- **Assay handwriting +50%** — `src/index.css:1115` — bumped session-preview / info-val / msg-time from 14 px → 21 px, added 18 px rule for user message body.
+- **Politburo topbar contrast** — `src/index.css:1128` — added rules so `Default model:`, the model value, and the Connection chip render cream on black. The black-on-black happened because the politburo body sets `--ink: #111` while the topbar background is also `#111`; inline styles using `var(--ink)` were invisible.
+- **Politburo composer** — replaced the black box with a beige (`#F2EDD5`) frame around a soft-red (`rgba(204,17,17,.08)`) textarea surface — matches the ghost-number red Tris referenced.
+- **Blizzard topbar contrast** — `.conn-status` was `rgba(224,236,244,.5)` (whitish) on the light-blue topbar; switched to `#1A2E40` (dark navy) so the "Connected" chip reads.
+- Typecheck (`tsc --noEmit`): clean. CSS-only changes — visual review required.
+- TESTING.md updated under Themes section.
+
 ### Group A — Composer ergonomics — ✅ done 2026-05-25
 
 - **Enter keeps cursor in composer** — `src/screens/Chat.tsx:1112` — after `handleSend()`, request animation frame and re-focus `composerRef`. The disabled→re-enabled cycle while `sending` was dropping focus.

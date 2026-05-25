@@ -1113,17 +1113,51 @@ input:focus, textarea:focus { border-color: var(--acc); }
 [data-theme="assay"] .nav-label { font-size: 13px; }
 
 /* Assay — the "handwritten" (IM Fell English italic) accents Tris likes
- * are too small to enjoy. Bump them ~50% in the surfaces where they
- * appear most prominently. */
+ * are too small to enjoy. Sprint 1 bumped these again (+50%) because the
+ * previous size still didn't land. */
 [data-theme="assay"] .session-preview,
 [data-theme="assay"] .info-val,
-[data-theme="assay"] .msg-time { font-size: 14px; line-height: 1.5; }
+[data-theme="assay"] .msg-time { font-size: 21px; line-height: 1.5; }
+[data-theme="assay"] .msg.user .msg-body { font-size: 18px; }
 
 /* Politburo — .btn-ghost was inheriting the cream .btn colour via the
  * higher-specificity Politburo override, then losing its red bg, ending
  * up as invisible cream-on-cream until hover. Set its colour explicitly. */
 [data-theme="politburo"] .btn-ghost { color: #CC1111; }
 [data-theme="politburo"] .btn-ghost:hover { color: #F2EDD5; background: #CC1111; border-color: #CC1111; }
+
+/* Politburo topbar — body is black (#111) so anything inheriting --ink
+ * (also #111) was black-on-black. Force cream foreground for meta and the
+ * inline-styled "Default model" label + value in the topbar specifically. */
+[data-theme="politburo"] #topbar .topbar-meta,
+[data-theme="politburo"] #topbar .topbar-meta * { color: #F2EDD5; }
+[data-theme="politburo"] #topbar .topbar-meta span[style*="--ink2"] { color: rgba(242,237,213,.6) !important; }
+[data-theme="politburo"] #topbar .topbar-meta b { color: #F2EDD5 !important; }
+[data-theme="politburo"] #topbar .topbar-theme-select { background: #1A1A1A; color: #F2EDD5; border-color: #2A2A2A; }
+[data-theme="politburo"] #topbar .conn-status { color: #F2EDD5; }
+[data-theme="politburo"] #topbar .conn-dot { background: #4A9050; }
+
+/* Politburo composer — Tris doesn't want the black box. Use beige frame
+ * + a soft red surface (echo of the ghost-number red) for the actual
+ * typing surface. */
+[data-theme="politburo"] .composer { background: #F2EDD5; border-top: 3px solid #CC1111; }
+[data-theme="politburo"] .composer-top { color: #111; }
+[data-theme="politburo"] .composer-top label,
+[data-theme="politburo"] .composer-top label > span { color: #111; }
+[data-theme="politburo"] .composer-top select { background: #E8E0C0; color: #111; border-color: rgba(17,17,17,.2); }
+[data-theme="politburo"] .composer-row textarea {
+  background: rgba(204,17,17,.08);
+  color: #111;
+  border-color: rgba(204,17,17,.35);
+  font-family: 'Oswald', sans-serif;
+}
+[data-theme="politburo"] .composer-row textarea::placeholder { color: rgba(17,17,17,.45); }
+
+/* Blizzard topbar — .conn-status was rgba(224,236,244,.5) (whitish) on
+ * the light-blue topbar surface, washing out completely. Use the dark
+ * navy --ink so it sits cleanly on top. */
+[data-theme="blizzard"] #topbar .conn-status { color: #1A2E40; }
+[data-theme="blizzard"] #topbar .topbar-meta b { color: #1A2E40; }
 
 /* Blizzard — top of the sidebar gradient was lighter than the HELM
  * wordmark, so the title vanished into the ice. Start darker, keep the

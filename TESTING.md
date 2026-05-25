@@ -179,7 +179,7 @@ Everything below requires manual confirmation.
 
 - [ ] **No corner-frame overlay** — topbar and main pane unobstructed (the decorative SVG was removed)
 - [ ] Nav menu items are larger (13 px) and brighter (~78 % gold opacity) than before
-- [ ] "Handwritten" italic (IM Fell English) accents — session previews, info values, message timestamps — render ~50 % larger so the texture lands
+- [ ] "Handwritten" italic (IM Fell English) accents — session previews, info values, message timestamps render at **21 px** (Sprint 1: bumped again +50 %); user-message body at 18 px
 - [ ] No regressions in the chat/editor/skills sub-panels
 
 ### Politburo
@@ -187,6 +187,8 @@ Everything below requires manual confirmation.
 - [ ] **Compact Context button text is visible without hover** (was invisible cream-on-cream); hovers cleanly to white-on-red
 - [ ] Other `.btn-ghost` buttons (Reset Session, Archive Session, Refresh, etc.) all show red text on cream at rest
 - [ ] Cyrillic header strip "УДАРНИК · СИСТЕМА v2.1" stays legible at top of sidebar
+- [ ] **Topbar "Default model" + value + "Connected" all render cream on black** (Sprint 1 fix — was black-on-black)
+- [ ] **Composer frame is beige** (`#F2EDD5`); textarea surface is soft red (`rgba(204,17,17,.08)`) with dark text (Sprint 1 fix — was a black box)
 
 ### Blizzard (First Blizzard / Long Dark)
 
@@ -194,6 +196,7 @@ Everything below requires manual confirmation.
 - [ ] Tree watermark at the bottom of the sidebar is visible without dominating — bigger silhouette + slightly brighter green
 - [ ] Nav menu items are larger (13 px) and brighter (~82 % off-white) than before
 - [ ] Survival stats (chat composer) still render under blizzard only
+- [ ] **Topbar "Connected" chip is dark navy on light blue** (Sprint 1 fix — was white-on-white)
 
 ## Global / cross-cutting
 

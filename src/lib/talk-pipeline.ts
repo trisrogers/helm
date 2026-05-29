@@ -91,11 +91,15 @@ export class TalkPipeline {
   private audioCtx: AudioContext | null = null;
   private replyTextSoFar = ''; // cumulative assistant text for current run
 
-  constructor(
-    private readonly client: OpenClawClient,
-    private readonly agentId: string,
-    private readonly callbacks: PipelineCallbacks,
-  ) {}
+  private readonly client: OpenClawClient;
+  private readonly agentId: string;
+  private readonly callbacks: PipelineCallbacks;
+
+  constructor(client: OpenClawClient, agentId: string, callbacks: PipelineCallbacks) {
+    this.client = client;
+    this.agentId = agentId;
+    this.callbacks = callbacks;
+  }
 
   getState(): PipelineState {
     return this.state;

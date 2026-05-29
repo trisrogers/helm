@@ -9,6 +9,7 @@ import {
   type CaptureHandle,
   type PlaybackHandle,
 } from '../lib/talk-audio';
+import { TalkPipeline, type PipelineState } from '../lib/talk-pipeline';
 
 interface Props { theme: Theme; }
 
@@ -166,6 +167,10 @@ export default function Talk({ theme }: Props) {
   const captureRef = useRef<CaptureHandle | null>(null);
   const playbackRef = useRef<PlaybackHandle | null>(null);
   const waveformCleanupRef = useRef<(() => void) | null>(null);
+  const pipelineRef = useRef<TalkPipeline | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const [pipelineState, setPipelineState] = useState<PipelineState>('idle');
+  const [agentId, setAgentId] = useState<string | null>(null);
 
   // Load catalog/config on connect
   useEffect(() => {
@@ -174,6 +179,17 @@ export default function Talk({ theme }: Props) {
       .then(setCatalog)
       .catch(e => console.warn('[talk] catalog failed', e));
   }, [client, status]);
+
+  // Fetch the agent list once — TalkPipeline needs one for `sessions.create`.
+  useEffect(() => {
+    if (!client || status !== 'connected' || agentId) return;
+    client.call<{ agents?: Array<{ id: string }> }>('agents.list')
+      .then(res => {
+        const first = res?.agents?.[0]?.id;
+        if (first) setAgentId(first);
+      })
+      .catch(e => console.warn('[talk] agents.list failed', e));
+  }, [client, status, agentId]);
 
   // Subscribe to talk.event when in session
   useEffect(() => {
@@ -218,6 +234,48 @@ export default function Talk({ theme }: Props) {
     setLevel(0);
   }, []);
 
+  // ── pipelined flow (Phase C) ───────────────────────────────────────
+  const startPipelined = useCallback(async () => {
+    if (!client || !agentId) return;
+    setErrorMsg(null);
+    setTranscript({});
+    if (!pipelineRef.current) {
+      pipelineRef.current = new TalkPipeline(client, agentId, {
+        onStateChange: setPipelineState,
+        onUserTranscript: (text) => setTranscript(prev => ({ ...prev, user: text || prev.user })),
+        onAssistantText: (text) => setTranscript(prev => ({ ...prev, agent: text || prev.agent })),
+        onError: (err) => setErrorMsg(err.message),
+        onMicHandle: (handle) => {
+          // Hook waveform when capture starts; tear it down when it stops.
+          waveformCleanupRef.current?.();
+          waveformCleanupRef.current = null;
+          captureRef.current = handle;
+          if (!handle) { setLevel(0); setMicState('off'); return; }
+          setMicState('on');
+          waveformCleanupRef.current = startWaveformOnStream(
+            canvasRef.current,
+            handle.audioCtx,
+            handle.stream,
+            setLevel,
+          );
+          audioCtxRef.current = handle.audioCtx;
+        },
+      });
+    }
+    try {
+      setMicState('requesting');
+      await pipelineRef.current.start();
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'pipeline.start failed');
+      setMicState('error');
+    }
+  }, [client, agentId]);
+
+  const stopPipelined = useCallback(async () => {
+    await pipelineRef.current?.stopRecord();
+  }, []);
+
+  // ── realtime flow (existing, kept as fallback for cloud realtime providers) ──
   const handleStart = useCallback(async () => {
     if (!client || status !== 'connected' || lifecycle !== 'idle') return;
     setErrorMsg(null);
@@ -286,7 +344,11 @@ export default function Talk({ theme }: Props) {
   }, [client, session, teardownAudio]);
 
   // Cleanup audio on unmount
-  useEffect(() => () => teardownAudio(), [teardownAudio]);
+  useEffect(() => () => {
+    teardownAudio();
+    pipelineRef.current?.dispose();
+    pipelineRef.current = null;
+  }, [teardownAudio]);
 
   // Update capture gating when mode or PTT state changes
   useEffect(() => {
@@ -308,8 +370,32 @@ export default function Talk({ theme }: Props) {
   const handlePttStart = () => { if (session) setPttActive(true); };
   const handlePttStop = () => { if (session) setPttActive(false); };
 
+  const realtimeActive = catalog?.realtime?.activeProvider;
+  const realtimeConfigured = catalog?.realtime?.providers?.some(p => p.configured);
+  const transcriptionConfigured = catalog?.transcription?.providers?.some(p => p.configured);
+  const speechConfigured = catalog?.speech?.providers?.some(p => p.configured);
+  // "Pipelined" = Helm orchestrates STT → openclaw session → TTS using local providers.
+  // See docs/talk-mode-deployment.md Phase C. Preferred over realtime when both halves
+  // are available, since it keeps the LLM on openclaw's existing session machinery.
+  const pipelinedAvailable = !!(transcriptionConfigured && speechConfigured);
+  const stackMode: 'pipelined' | 'realtime' | 'unavailable' =
+    pipelinedAvailable ? 'pipelined' : realtimeConfigured ? 'realtime' : 'unavailable';
+
   const statusText = (() => {
     if (status !== 'connected') return 'Disconnected';
+    if (stackMode === 'pipelined') {
+      if (micState === 'denied') return 'Mic denied — enable in browser settings';
+      if (micState === 'error') return errorMsg ?? 'Mic error';
+      switch (pipelineState) {
+        case 'idle': return agentId ? 'Tap mic to begin' : 'Waiting for agent…';
+        case 'recording': return mode === 'push-to-talk'
+          ? (pttActive ? 'Streaming…' : 'Hold to talk')
+          : (level > 0.04 ? 'Listening…' : 'Listening');
+        case 'finalizing': return 'Transcribing…';
+        case 'thinking': return 'Thinking…';
+        case 'speaking': return 'Speaking…';
+      }
+    }
     if (lifecycle === 'creating') return 'Creating session…';
     if (lifecycle === 'closing') return 'Closing…';
     if (lifecycle === 'idle') return 'Tap mic to begin';
@@ -321,9 +407,11 @@ export default function Talk({ theme }: Props) {
     }
     return level > 0.04 ? 'Listening…' : 'Standing by';
   })();
-
-  const realtimeActive = catalog?.realtime?.activeProvider;
-  const realtimeConfigured = catalog?.realtime?.providers?.some(p => p.configured);
+  const stackLabel = stackMode === 'pipelined'
+    ? 'PIPELINED (LOCAL)'
+    : stackMode === 'realtime'
+    ? `REALTIME${realtimeActive ? ` · ${realtimeActive.toUpperCase()}` : ''}`
+    : 'NO PROVIDER';
   const recentEvents = useMemo(() => events.slice(-6).reverse(), [events]);
 
   return (
@@ -347,8 +435,10 @@ export default function Talk({ theme }: Props) {
         </div>
       )}
       <div className="talk-mode-badge">
-        <span className={`dot ${realtimeConfigured ? 'dot-ok' : 'dot-idle'}`} />
-        <span>{mode === 'auto-detect' ? 'AUTO-DETECT MODE' : 'PUSH-TO-TALK MODE'}</span>
+        <span className={`dot ${stackMode !== 'unavailable' ? 'dot-ok' : 'dot-idle'}`} />
+        <span>{stackLabel}</span>
+        <span style={{ opacity: 0.4 }}>·</span>
+        <span>{mode === 'auto-detect' ? 'AUTO-DETECT' : 'PUSH-TO-TALK'}</span>
         <button
           className="btn btn-ghost"
           style={{ fontSize: '9px', padding: '2px 6px' }}
@@ -373,7 +463,9 @@ export default function Talk({ theme }: Props) {
       <div className="talk-transcript">
         {!session && (
           <div className="t-user" style={{ color: 'var(--ink2)' }}>
-            {realtimeActive
+            {stackMode === 'pipelined'
+              ? 'Pipelined STT→LLM→TTS ready (local Whisper + Kokoro). Tap the mic to start.'
+              : realtimeActive
               ? `Realtime provider configured: ${realtimeActive}.`
               : realtimeConfigured
               ? 'A realtime provider is available — tap the mic to start a session.'
@@ -404,7 +496,7 @@ export default function Talk({ theme }: Props) {
         <button
           className="btn btn-ghost"
           style={{ padding: '10px 16px' }}
-          disabled={!session}
+          disabled={stackMode === 'pipelined' ? pipelineState === 'idle' : !session}
           onClick={() => captureRef.current?.setActive(false)}
           title="Mute mic (stops uploading audio)"
         >🔇</button>
@@ -416,26 +508,55 @@ export default function Talk({ theme }: Props) {
             boxShadow: pttActive ? '0 0 24px var(--acc)' : undefined,
           }}
           onClick={() => {
+            if (stackMode === 'pipelined') {
+              if (pipelineState === 'idle') startPipelined();
+              else if (pipelineState === 'recording' && mode === 'auto-detect') stopPipelined();
+              return;
+            }
             if (lifecycle === 'idle') handleStart();
             else if (lifecycle === 'live' && mode === 'auto-detect') handleStop();
           }}
-          onMouseDown={() => { if (lifecycle === 'live' && mode === 'push-to-talk') handlePttStart(); }}
-          onMouseUp={() => { if (lifecycle === 'live' && mode === 'push-to-talk') handlePttStop(); }}
+          onMouseDown={() => {
+            if (stackMode === 'pipelined') {
+              if (pipelineState === 'idle' && mode === 'push-to-talk') startPipelined();
+              return;
+            }
+            if (lifecycle === 'live' && mode === 'push-to-talk') handlePttStart();
+          }}
+          onMouseUp={() => {
+            if (stackMode === 'pipelined') {
+              if (pipelineState === 'recording' && mode === 'push-to-talk') stopPipelined();
+              return;
+            }
+            if (lifecycle === 'live' && mode === 'push-to-talk') handlePttStop();
+          }}
           onMouseLeave={() => { if (pttActive) handlePttStop(); }}
-          disabled={lifecycle === 'creating' || lifecycle === 'closing'}
+          disabled={
+            stackMode === 'pipelined'
+              ? pipelineState === 'finalizing' || pipelineState === 'thinking'
+              : lifecycle === 'creating' || lifecycle === 'closing'
+          }
         >🎙</button>
 
         <button
           className="btn btn-ghost"
           style={{ padding: '10px 16px', color: 'var(--err)', borderColor: 'var(--err)' }}
-          onClick={handleStop}
-          disabled={!session}
+          onClick={() => {
+            if (stackMode === 'pipelined') pipelineRef.current?.cancel();
+            else handleStop();
+          }}
+          disabled={stackMode === 'pipelined' ? pipelineState === 'idle' : !session}
         >End</button>
       </div>
 
       {session && (
         <div style={{ position: 'absolute', bottom: '12px', left: '12px', fontSize: '10px', color: 'var(--ink2)', fontFamily: 'var(--fm)' }}>
           session: {session.sessionId} · {session.provider ?? '—'} · {session.transport}
+        </div>
+      )}
+      {stackMode === 'pipelined' && pipelineState !== 'idle' && (
+        <div style={{ position: 'absolute', bottom: '12px', left: '12px', fontSize: '10px', color: 'var(--ink2)', fontFamily: 'var(--fm)' }}>
+          pipeline: {pipelineState}
         </div>
       )}
     </div>

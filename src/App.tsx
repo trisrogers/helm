@@ -297,7 +297,7 @@ function useDefaultModel(): DefaultModelInfo | null {
 }
 
 function AppInner() {
-  const [theme, setTheme]         = useState<Theme>('assay');
+  const [theme, setTheme]         = useState<Theme>('blizzard');
   const [screen, setScreen]       = useState<ScreenId>('overview');
   const [collapsed, setCollapsed] = useState(false);
   const [clock, setClock]         = useState('');

@@ -4,7 +4,6 @@ export type ScreenId =
   | 'overview'
   | 'chat'
   | 'talk'
-  | 'design'
   | 'tasks'
   | 'goals'
   | 'orch'
@@ -17,7 +16,6 @@ export const NAV_LABELS: Record<Theme, Record<ScreenId, string>> = {
     overview: 'Engine Room',
     chat: 'Dispatches',
     talk: 'Telegraph',
-    design: 'Blueprint',
     tasks: 'Works Orders',
     goals: 'Ventures',
     orch: 'Operations',
@@ -29,7 +27,6 @@ export const NAV_LABELS: Record<Theme, Record<ScreenId, string>> = {
     overview: 'Central Command',
     chat: 'Transmissions',
     talk: 'Broadcast',
-    design: 'Design Bureau',
     tasks: 'Directives',
     goals: 'Objectives',
     orch: 'Apparatus',
@@ -41,7 +38,6 @@ export const NAV_LABELS: Record<Theme, Record<ScreenId, string>> = {
     overview: 'Camp Status',
     chat: 'Field Notes',
     talk: 'Signal',
-    design: 'Blueprint',
     tasks: 'Objectives',
     goals: 'Expeditions',
     orch: 'Ranger Network',

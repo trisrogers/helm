@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type Theme } from '../types';
 import { useGateway } from '../context/GatewayContext';
 import { navigateTo, extractHTMLFromAssistantText } from '../lib/handoff';
+import DesignCanvas from '../components/DesignCanvas';
 import {
   createChatModelOverride,
   type ChatModelOverride,
@@ -271,6 +272,10 @@ function normalizeChannel(ch: string | undefined): string {
 const CHAT_ACTIVE_KEY_STORAGE = 'helm:chat:activeKey';
 const SHOW_TOOLS_STORAGE = 'helm:chat:showTools';
 const SHOW_EMPTY_STORAGE = 'helm:chat:showEmpty';
+const CANVAS_WIDTH_STORAGE = 'helm:chat:canvasWidth';
+const canvasOpenStorage = (key: string) => `helm:chat:canvasOpen:${key}`;
+const CANVAS_MIN_WIDTH = 360;
+const CANVAS_DEFAULT_WIDTH = 620;
 
 function readStoredActiveKey(): string | null {
   try { return localStorage.getItem(CHAT_ACTIVE_KEY_STORAGE) || null; }
@@ -357,6 +362,20 @@ export default function Chat({ theme: _theme }: ChatProps) {
    *  Cleared on agent.lifecycle.end for the matching run. */
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  /* ── slide-out design canvas ──────────────────────────────────── */
+  // Open state is per session (persisted); width is shared across sessions.
+  const [canvasOpen, setCanvasOpenState] = useState(false);
+  const [canvasWidth, setCanvasWidth] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem(CANVAS_WIDTH_STORAGE);
+      const n = raw ? parseInt(raw, 10) : NaN;
+      return Number.isFinite(n) ? n : CANVAS_DEFAULT_WIDTH;
+    } catch { return CANVAS_DEFAULT_WIDTH; }
+  });
+  const [resizingCanvas, setResizingCanvas] = useState(false);
+  // One-shot HTML seed for the canvas, scoped to the session it was pulled
+  // from so a session switch can't replay a stale seed over saved edits.
+  const [canvasSeed, setCanvasSeed] = useState<{ key: string; html: string; label: string } | null>(null);
   /** Keys we'll accept session.message events for. Populated with both the
    *  client-side activeKey and the canonical key returned by the gateway's
    *  sessions.messages.subscribe response — the two can diverge when
@@ -660,6 +679,44 @@ export default function Chat({ theme: _theme }: ChatProps) {
     }
   };
 
+  // Persist open/closed per session; reload it when the active session changes.
+  const setCanvasOpen = useCallback((v: boolean) => {
+    setCanvasOpenState(v);
+    if (!activeKey) return;
+    try { localStorage.setItem(canvasOpenStorage(activeKey), v ? '1' : '0'); } catch { /* quota */ }
+  }, [activeKey]);
+
+  useEffect(() => {
+    if (!activeKey) { setCanvasOpenState(false); return; }
+    try { setCanvasOpenState(localStorage.getItem(canvasOpenStorage(activeKey)) === '1'); }
+    catch { setCanvasOpenState(false); }
+  }, [activeKey]);
+
+  // Persist width on change (cheap — it's a single integer).
+  useEffect(() => {
+    try { localStorage.setItem(CANVAS_WIDTH_STORAGE, String(Math.round(canvasWidth))); } catch { /* quota */ }
+  }, [canvasWidth]);
+
+  // Drag the left edge of the panel to resize. Dragging left widens it.
+  const startCanvasResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = canvasWidth;
+    setResizingCanvas(true);
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      const max = Math.max(CANVAS_MIN_WIDTH, window.innerWidth - 420);
+      setCanvasWidth(Math.min(Math.max(startW + delta, CANVAS_MIN_WIDTH), max));
+    };
+    const onUp = () => {
+      setResizingCanvas(false);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [canvasWidth]);
+
   const visibleMessages = useMemo(() => {
     if (showTools) return messages;
     // When tools are hidden, drop role=tool/system rows entirely, and drop
@@ -833,6 +890,24 @@ export default function Chat({ theme: _theme }: ChatProps) {
   }, [sessions, search, agentFilter, channelFilter, showEmpty, activeKey]);
 
   const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
+
+  // Open the canvas and seed it with the most recent assistant HTML (if any).
+  // Walks back so a trailing "Done!" reply doesn't shadow the HTML message.
+  const openCanvasWithLatestHTML = useCallback(() => {
+    if (!activeKey) return;
+    let html: string | null = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== 'assistant') continue;
+      const found = extractHTMLFromAssistantText(m.text);
+      if (found) { html = found; break; }
+    }
+    if (html) {
+      const label = active?.displayName ?? active?.derivedTitle ?? activeKey;
+      setCanvasSeed({ key: activeKey, html, label: `Chat session: ${label}` });
+    }
+    setCanvasOpen(true);
+  }, [activeKey, messages, active, setCanvasOpen]);
 
   // Context-usage bar.
   //
@@ -1135,9 +1210,21 @@ export default function Chat({ theme: _theme }: ChatProps) {
             {errorMsg && (
               <span style={{ marginLeft: '8px', color: 'var(--err)' }}>{errorMsg}</span>
             )}
+            {active && (
+              <span
+                style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                title={`Context used: ${contextUsed.toLocaleString()} / ${contextMax.toLocaleString()} tokens${ctxIsEstimate ? ' (estimated)' : ''}`}
+              >
+                <span style={{ color: 'var(--ink2)' }}>ctx</span>
+                <span style={{ width: '64px', height: '6px', background: 'var(--surf2)', borderRadius: '3px', overflow: 'hidden', display: 'inline-block' }}>
+                  <span style={{ display: 'block', height: '100%', width: `${ctxPct}%`, background: 'var(--acc)' }} />
+                </span>
+                <span style={{ color: 'var(--ink2)' }}>{ctxPct.toFixed(0)}%{ctxIsEstimate ? ' est' : ''}</span>
+              </span>
+            )}
             <button
               className="btn"
-              style={{ marginLeft: 'auto', padding: '3px 8px', fontSize: '10px' }}
+              style={{ marginLeft: active ? '8px' : 'auto', padding: '3px 8px', fontSize: '10px' }}
               onClick={handleExport}
               disabled={messages.length === 0}
               title="Download conversation as Markdown"
@@ -1148,6 +1235,13 @@ export default function Chat({ theme: _theme }: ChatProps) {
               onClick={handleAbort}
               disabled={!active?.hasActiveRun}
             >✕ Abort</button>
+            <button
+              className={`btn ${canvasOpen ? 'btn-on' : ''}`}
+              style={{ padding: '3px 8px', fontSize: '10px' }}
+              onClick={() => setCanvasOpen(!canvasOpen)}
+              disabled={!activeKey}
+              title="Toggle the design canvas alongside this chat"
+            >⬚ Canvas</button>
           </div>
           <div className="survival-stats">
             <div className="surv-stat"><div className="surv-dot h"></div><div className="surv-bar"><div className="surv-fill h"></div></div></div>
@@ -1285,6 +1379,22 @@ export default function Chat({ theme: _theme }: ChatProps) {
         </div>
       </div>
 
+      {canvasOpen && activeKey ? (
+        <div
+          className={`chat-canvas-panel ${resizingCanvas ? 'resizing' : ''}`}
+          style={{ width: `${canvasWidth}px` }}
+        >
+          <div className="chat-canvas-resize" onMouseDown={startCanvasResize} title="Drag to resize" />
+          <DesignCanvas
+            key={activeKey}
+            storageId={activeKey}
+            seedHTML={canvasSeed && canvasSeed.key === activeKey ? canvasSeed.html : null}
+            seedLabel={canvasSeed && canvasSeed.key === activeKey ? canvasSeed.label : undefined}
+            onClose={() => setCanvasOpen(false)}
+            compact={canvasWidth < 560}
+          />
+        </div>
+      ) : (
       <div className="chat-info">
         <div className="card-title">Session Info</div>
         {!active && (
@@ -1298,47 +1408,13 @@ export default function Chat({ theme: _theme }: ChatProps) {
             <div className="info-row"><span className="info-label">Channel</span><span className="info-val">{active.lastChannel ?? active.channel ?? 'Direct'}</span></div>
             <div className="info-row"><span className="info-label">Status</span><span className="info-val">{active.status ?? '—'}</span></div>
             <div className="info-row"><span className="info-label">Updated</span><span className="info-val">{fmtRelative(active.updatedAt)}</span></div>
-            <div style={{ marginTop: '4px' }}>
-              <div className="card-title">
-                Context Used
-                {ctxIsEstimate && (
-                  <span style={{ marginLeft: '6px', fontSize: '9px', color: 'var(--ink2)', textTransform: 'none', letterSpacing: 'normal' }}>
-                    (est.)
-                  </span>
-                )}
-              </div>
-              <div className="token-bar"><div className="token-fill" style={{ width: `${ctxPct}%` }} /></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--ink2)', marginTop: '3px' }}>
-                <span>{contextUsed.toLocaleString()} / {contextMax.toLocaleString()}</span>
-                <span>{ctxPct.toFixed(1)}%</span>
-              </div>
-            </div>
             <div style={{ marginTop: '4px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
               <button
                 className="btn btn-ghost"
                 style={{ width: '100%', fontSize: '11px' }}
-                title="Send the latest assistant HTML (if any) to the Design canvas and switch screens"
-                onClick={() => {
-                  // Walk back through assistant replies and pick the most
-                  // recent one that actually yields HTML. The previous
-                  // implementation only looked at the latest assistant
-                  // message; a follow-up confirmation ("Done!") would then
-                  // shadow the earlier message that contained the HTML.
-                  let html: string | null = null;
-                  for (let i = messages.length - 1; i >= 0; i--) {
-                    const m = messages[i];
-                    if (m.role !== 'assistant') continue;
-                    const found = extractHTMLFromAssistantText(m.text);
-                    if (found) { html = found; break; }
-                  }
-                  const label = active.displayName ?? active.derivedTitle ?? active.key;
-                  navigateTo('design', {
-                    ...(html ? { html } : {}),
-                    sourceLabel: `Chat session: ${label}`,
-                    ts: new Date().toISOString(),
-                  });
-                }}
-              >⬚ Open in Design</button>
+                title="Open the design canvas alongside this chat, seeded with the latest assistant HTML"
+                onClick={openCanvasWithLatestHTML}
+              >⬚ Open in Canvas</button>
               <button
                 className="btn btn-ghost"
                 style={{ width: '100%', fontSize: '11px' }}
@@ -1393,6 +1469,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }

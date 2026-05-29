@@ -1,28 +1,19 @@
 /**
  * Lightweight cross-screen handoff. Used when one screen wants to send
- * the user (and a payload) to another. We keep this client-side only
- * for now — the lightest-touch fold per Tris's IA call — so Design and
- * Talk stay as their own screens while gaining a "continue here from
- * Chat" affordance.
+ * the user (and a payload) to another. We keep this client-side only —
+ * the lightest-touch fold per Tris's IA call. The design canvas now lives
+ * inline in Chat (no nav), so only the Talk handoff remains.
  *
  * Wire:
- *   navigateTo('design', { html: '...' })
+ *   navigateTo('talk', { fromSessionKey, ... })
  *      ↓ dispatches `helm:nav` (App listens, switches screen)
- *      ↓ writes localStorage key `helm:handoff:design`
- *   target screen on mount → consumeHandoff('design') → state seeded.
+ *      ↓ writes localStorage key `helm:handoff:talk`
+ *   target screen on mount → consumeHandoff('talk') → state seeded.
  */
 import type { ScreenId } from '../types';
 
 const KEY_PREFIX = 'helm:handoff:';
 const NAV_EVENT = 'helm:nav';
-
-export interface DesignHandoff {
-  html?: string;
-  /** Where the payload came from, for display in the target screen. */
-  sourceLabel?: string;
-  /** Always a wall-clock ISO so stale handoffs can be ignored. */
-  ts: string;
-}
 
 export interface TalkHandoff {
   /** The chat session key that initiated the handoff. Talk uses its own
@@ -33,7 +24,6 @@ export interface TalkHandoff {
 }
 
 interface HandoffMap {
-  design: DesignHandoff;
   talk: TalkHandoff;
 }
 

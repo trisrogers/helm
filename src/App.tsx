@@ -6,7 +6,6 @@ import { onNavigate } from './lib/handoff';
 import Overview from './screens/Overview';
 import Chat from './screens/Chat';
 import Talk from './screens/Talk';
-import Design from './screens/Design';
 import Tasks from './screens/Tasks';
 import Goals from './screens/Goals';
 import Orch from './screens/Orch';
@@ -29,7 +28,6 @@ function buildNavSections(badges: Partial<Record<ScreenId, number>>): NavSection
         withBadge('overview', '⊡'),
         withBadge('chat', '◻'),
         withBadge('talk', '◉'),
-        withBadge('design', '⬚'),
       ],
     },
     {
@@ -216,7 +214,7 @@ function ConnStatus() {
 /* ── APP ─────────────────────────────────────────────────────────── */
 
 const SCREEN_ORDER: ScreenId[] = [
-  'overview', 'chat', 'talk', 'design',
+  'overview', 'chat', 'talk',
   'tasks', 'goals', 'orch',
   'editor', 'skills', 'plan',
 ];
@@ -322,7 +320,7 @@ function AppInner() {
 
   useEffect(() => onStoreChange(() => setStoreTick(n => n + 1)), []);
 
-  // Cross-screen handoff: Chat → Design / Talk dispatches `helm:nav`;
+  // Cross-screen handoff: Chat → Talk dispatches `helm:nav`;
   // here we switch the active screen. The payload lives in localStorage
   // and the target screen consumes it on mount via consumeHandoff().
   useEffect(() => onNavigate(setScreen), []);
@@ -459,7 +457,6 @@ function AppInner() {
           {screen === 'overview' && <Overview />}
           {screen === 'chat'     && <Chat theme={theme} />}
           {screen === 'talk'     && <Talk theme={theme} />}
-          {screen === 'design'   && <Design />}
           {screen === 'tasks'    && <Tasks theme={theme} />}
           {screen === 'goals'    && <Goals theme={theme} />}
           {screen === 'orch'     && <Orch />}

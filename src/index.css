@@ -630,7 +630,7 @@ input:focus, textarea:focus { border-color: var(--acc); }
 .cron-time { color: var(--acc); font-family: var(--fm); font-size: 10px; width: 70px; flex-shrink: 0; }
 
 /* ── CHAT ────────────────────────────────────────────────────────── */
-#screen-chat { flex-direction: row; }
+#screen-chat { flex-direction: row; position: relative; }
 .chat-sessions { width: 240px; flex-shrink: 0; background: var(--surf); border-right: 1px solid var(--brd); display: flex; flex-direction: column; }
 .chat-sessions-head { padding: 10px 12px; border-bottom: 1px solid var(--brd); display: flex; align-items: center; gap: 8px; }
 .chat-sessions-head input { flex: 1; font-size: 11px; padding: 5px 8px; }
@@ -682,6 +682,36 @@ input:focus, textarea:focus { border-color: var(--acc); }
 .token-bar { height: 6px; background: var(--surf2); border-radius: 3px; overflow: hidden; margin-top: 4px; }
 .token-fill { height: 100%; background: var(--acc); width: 6.2%; }
 
+/* Active/toggled-on state for a .btn (e.g. the Canvas toggle when open) */
+.btn-on { background: var(--acc); color: var(--bg); border-color: var(--acc); }
+
+/* ── CHAT SLIDE-OUT DESIGN CANVAS ────────────────────────────────── */
+/* Replaces the chat-info rail while open. Mounted only when open so
+ * CodeMirror pays no startup cost otherwise. */
+.chat-canvas-panel {
+  flex-shrink: 0;
+  display: flex;
+  background: var(--surf);
+  border-left: 1px solid var(--brd);
+  min-width: 0;
+  overflow: hidden;
+  animation: canvasSlideIn .18s ease;
+}
+.chat-canvas-panel.resizing { user-select: none; }
+@keyframes canvasSlideIn {
+  from { opacity: .3; transform: translateX(24px); }
+  to   { opacity: 1; transform: none; }
+}
+.chat-canvas-resize {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: var(--brd);
+  transition: background .1s;
+}
+.chat-canvas-resize:hover,
+.chat-canvas-panel.resizing .chat-canvas-resize { background: var(--acc); }
+
 /* ── SURVIVAL STATS (Blizzard chat composer) ─────────────────────── */
 .survival-stats { display: none; }
 [data-theme="blizzard"] .survival-stats {
@@ -727,8 +757,17 @@ input:focus, textarea:focus { border-color: var(--acc); }
 .talk-mode-badge { position: absolute; top: 16px; right: 16px; font-size: 10px; color: var(--ink2); text-transform: uppercase; letter-spacing: 1px; display: flex; align-items: center; gap: 8px; }
 
 /* ── DESIGN ──────────────────────────────────────────────────────── */
-#screen-design { flex-direction: row; }
-.design-left { width: 38%; border-right: 1px solid var(--brd); display: flex; flex-direction: column; }
+#screen-design { flex-direction: column; }
+/* Reusable canvas container — fills the standalone screen or the in-chat
+ * slide-out panel. .design-canvas-body lays the editor + preview side by
+ * side; .compact stacks them for a narrow panel. */
+.design-canvas { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.design-canvas-body { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.design-canvas.compact .design-canvas-body { flex-direction: column; }
+.design-canvas.compact .design-left { width: 100%; border-right: none; border-bottom: 1px solid var(--brd); }
+.design-canvas-head { padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--ink2); }
+.design-canvas-migrate { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--glow); border-bottom: 1px solid var(--brd); font-size: 11px; color: var(--ink); }
+.design-left { width: 38%; border-right: 1px solid var(--brd); display: flex; flex-direction: column; min-width: 0; }
 .design-left .chat-thread { background: var(--bg); }
 .viewport-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); font-size: 11px; }
 .viewport-btn { padding: 3px 8px; border-radius: var(--r); border: 1px solid var(--brd); cursor: pointer; font-size: 10px; background: transparent; color: var(--ink2); font-family: var(--fb); }
@@ -1239,6 +1278,16 @@ input:focus, textarea:focus { border-color: var(--acc); }
   /* Chat thread + composer take the full pane; sessions list narrows */
   .chat-sessions { width: 160px; }
 
+  /* No room to push — the canvas floats over the chat full-width. */
+  .chat-canvas-panel {
+    position: absolute;
+    inset: 0;
+    width: auto !important;
+    z-index: 20;
+    border-left: none;
+  }
+  .chat-canvas-resize { display: none; }
+
   /* Goals + Skills detail panes stack below their lists */
   #screen-goals,
   #screen-skills .skills-content { flex-direction: column; }
@@ -1255,6 +1304,7 @@ input:focus, textarea:focus { border-color: var(--acc); }
 
   /* Design canvas stacks editor over preview */
   #screen-design { flex-direction: column; }
+  .design-canvas-body { flex-direction: column; }
   .design-left,
   .design-right { width: 100%; flex: 1; }
 

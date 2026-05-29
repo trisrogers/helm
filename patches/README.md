@@ -25,10 +25,32 @@ systemctl --user restart openclaw-gateway
 
 `scripts/apply-openclaw-talk-patch.mjs` locates the relay chunk by content (not
 filename), is idempotent (skips an already-patched build), backs up the chunk to
-`*.pre-talk-patch`, and aborts loudly if the bundle shape changed. Run it after
-every `openclaw` version bump. If it ever aborts, this `.patch` is the source of
-truth for what the change should be — rebuild from a synced source checkout as a
-fallback.
+`*.pre-talk-patch`, and aborts loudly if the bundle shape changed. If it ever
+aborts, this `.patch` is the source of truth for what the change should be —
+rebuild from a synced source checkout as a fallback.
+
+### Auto-apply on update (wired)
+
+The patcher runs automatically before the gateway starts, via a systemd drop-in:
+
+- `scripts/talk-relay-patch.conf` → installed at
+  `~/.config/systemd/user/openclaw-gateway.service.d/talk-relay-patch.conf`
+- adds `ExecStartPre=-node .../apply-openclaw-talk-patch.mjs` to the gateway unit
+
+OpenClaw self-updates wipe the dist and regenerate the main unit, but the
+`.service.d/` drop-in is a separate path it doesn't manage. So on the next
+gateway restart (which an update triggers), the patcher re-applies before the
+new process loads the bundle. Self-healing, idempotent, and the leading `-`
+ensures a patcher failure degrades Talk STT rather than blocking the gateway.
+
+To (re)install the wiring on a fresh box:
+
+```bash
+mkdir -p ~/.config/systemd/user/openclaw-gateway.service.d
+cp scripts/talk-relay-patch.conf ~/.config/systemd/user/openclaw-gateway.service.d/
+systemctl --user daemon-reload
+systemctl --user restart openclaw-gateway   # re-patches + confirms
+```
 
 ### Companion change (not in this patch)
 

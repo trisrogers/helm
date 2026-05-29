@@ -14,18 +14,21 @@ local Whisper path, which streams PCM16/16 kHz.
 
 ### Re-applying after an OpenClaw update
 
-The installed package ships bundled/minified `dist/` with per-version chunk
-filenames, so this `.patch` cannot be applied to `dist/` directly. The durable
-path is source-based:
+The installed package ships a bundled (but un-minified) `dist/` with per-version
+chunk filenames. The relay code stays stable across versions, so the durable fix
+is to rewrite that function in place rather than rebuild from source:
 
-1. In the `openclaw` source checkout, sync to the installed version's tag.
-2. `git apply /path/to/openclaw-talk-relay.patch` (or 3-way merge if it drifts).
-3. `pnpm install && pnpm run build`.
-4. `rsync -a --delete dist/ ~/.npm-global/lib/node_modules/openclaw/dist/`.
-5. `systemctl --user restart openclaw-gateway`.
+```bash
+node scripts/apply-openclaw-talk-patch.mjs          # patches the live install
+systemctl --user restart openclaw-gateway
+```
 
-A future `scripts/apply-openclaw-patch.sh` should wrap steps 1–5 and run on each
-update. Not built yet — see the Helm-Talk session notes.
+`scripts/apply-openclaw-talk-patch.mjs` locates the relay chunk by content (not
+filename), is idempotent (skips an already-patched build), backs up the chunk to
+`*.pre-talk-patch`, and aborts loudly if the bundle shape changed. Run it after
+every `openclaw` version bump. If it ever aborts, this `.patch` is the source of
+truth for what the change should be — rebuild from a synced source checkout as a
+fallback.
 
 ### Companion change (not in this patch)
 

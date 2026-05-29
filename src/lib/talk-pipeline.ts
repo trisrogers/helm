@@ -90,6 +90,7 @@ export class TalkPipeline {
   private playbackSource: AudioBufferSourceNode | null = null;
   private audioCtx: AudioContext | null = null;
   private replyTextSoFar = ''; // cumulative assistant text for current run
+  private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly client: OpenClawClient;
   private readonly agentId: string;
@@ -162,12 +163,25 @@ export class TalkPipeline {
         this.callbacks.onError?.(err as Error);
         this.setState('idle');
         this.talkSessionId = null;
+        return;
       }
+      // Backstop: if transcript.done never arrives (e.g. sidecar dies mid-
+      // inference), don't hang in "finalizing" forever.
+      this.clearFinalizeTimer();
+      this.finalizeTimer = setTimeout(() => {
+        this.finalizeTimer = null;
+        if (this.state === 'finalizing') {
+          this.talkSessionId = null;
+          this.callbacks.onError?.(new Error('transcription timed out'));
+          this.setState('idle');
+        }
+      }, 30_000);
     }
   }
 
   /** Hard cancel: stop everything, drop state, back to idle. */
   async cancel(): Promise<void> {
+    this.clearFinalizeTimer();
     this.captureHandle?.stop();
     this.captureHandle = null;
     this.callbacks.onMicHandle?.(null);
@@ -241,28 +255,45 @@ export class TalkPipeline {
 
   private handleTalkEvent(e: TalkEventFrame) {
     if (!e || e.transcriptionSessionId !== this.talkSessionId) return;
-    // The relay emits two kinds of `type: "transcript"` events: an empty one
-    // from stopTalkTranscriptionRelaySession (synchronous on close) and the
-    // real one from onTranscript once Whisper finishes. Forward only frames
-    // with non-empty text; ignore the empty-final placeholders.
-    if (e.type === 'transcript' && e.final && typeof e.text === 'string' && e.text.trim()) {
-      const text = e.text.trim();
+
+    // The relay emits several `type:"transcript"` frames per turn: an empty
+    // placeholder on close (talkEvent.type "input.audio.committed") and the real
+    // Whisper result (talkEvent.type "transcript.done"), which lands AFTER the
+    // "close" event because inference is async. Key off transcript.done so we
+    // don't tear down on the early placeholder/close and drop the real result.
+    const talkType = e.talkEvent?.type;
+
+    if (talkType === 'transcript.done') {
+      const text = (e.text ?? e.talkEvent?.payload?.text ?? '').trim();
+      this.clearFinalizeTimer();
       this.talkSessionId = null;
       this.callbacks.onUserTranscript?.(text);
-      this.sendToChat(text);
-    } else if (e.type === 'close') {
-      // Session closed by relay (e.g. stt timeout or error after we requested
-      // close). If we're still in finalizing and no transcript ever arrived,
-      // drop back to idle so the user can retry.
-      if (this.state === 'finalizing') {
-        this.talkSessionId = null;
+      if (text) {
+        this.sendToChat(text);
+      } else {
+        // Whisper heard nothing — back to idle so the user can retry.
         this.setState('idle');
       }
-    } else if (e.type === 'error') {
-      const msg = e.message ?? 'transcription error';
-      this.callbacks.onError?.(new Error(msg));
+    } else if (talkType === 'session.error' || e.type === 'error') {
+      const msg = e.message ?? e.talkEvent?.payload?.message ?? 'transcription error';
+      this.clearFinalizeTimer();
+      this.callbacks.onError?.(new Error(String(msg)));
       this.talkSessionId = null;
       this.setState('idle');
+    } else if (e.type === 'close' && e.reason === 'error') {
+      // Relay closed the session abnormally (e.g. sidecar error). The normal
+      // "completed" close is ignored — transcript.done is still coming.
+      this.clearFinalizeTimer();
+      this.callbacks.onError?.(new Error('transcription session closed'));
+      this.talkSessionId = null;
+      this.setState('idle');
+    }
+  }
+
+  private clearFinalizeTimer() {
+    if (this.finalizeTimer !== null) {
+      clearTimeout(this.finalizeTimer);
+      this.finalizeTimer = null;
     }
   }
 
@@ -309,10 +340,10 @@ export class TalkPipeline {
   private async speakReply(text: string) {
     this.setState('speaking');
     try {
-      const res = await this.client.call<TalkSpeakResult>('talk.speak', {
-        text,
-        provider: 'tts-local-kokoro',
-      });
+      // talk.speak resolves the TTS provider server-side from gateway config
+      // (talk.provider); the request schema rejects a `provider` field. The
+      // gateway is configured to use tts-local-kokoro.
+      const res = await this.client.call<TalkSpeakResult>('talk.speak', { text });
       if (!res?.audioBase64) {
         this.setState('idle');
         return;

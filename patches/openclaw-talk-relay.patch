@@ -1,0 +1,132 @@
+diff --git a/src/gateway/talk-transcription-relay.test.ts b/src/gateway/talk-transcription-relay.test.ts
+index e8a6c73c4b..8420b3057e 100644
+--- a/src/gateway/talk-transcription-relay.test.ts
++++ b/src/gateway/talk-transcription-relay.test.ts
+@@ -200,7 +200,7 @@ describe("talk transcription gateway relay", () => {
+     });
+   });
+ 
+-  it("rejects provider configs that do not match relay audio input", () => {
++  it("honours provider-declared audio format in the relay response", () => {
+     const sttSession = {
+       connect: vi.fn(async () => {}),
+       sendAudio: vi.fn(),
+@@ -218,15 +218,17 @@ describe("talk transcription gateway relay", () => {
+       broadcastToConnIds: vi.fn(),
+     } as never;
+ 
+-    expect(() =>
+-      createTalkTranscriptionRelaySession({
+-        context,
+-        connId: "conn-1",
+-        provider,
+-        providerConfig: { encoding: "linear16", sampleRate: 16000 },
+-      }),
+-    ).toThrow("Gateway transcription relay requires g711_ulaw/8000 audio");
+-    expect(provider.createSession).not.toHaveBeenCalled();
++    const session = createTalkTranscriptionRelaySession({
++      context,
++      connId: "conn-1",
++      provider,
++      providerConfig: { encoding: "linear16", sampleRate: 16000 },
++    });
++    expectRecordFields(session.audio, "session audio", {
++      inputEncoding: "pcm16",
++      inputSampleRateHz: 16000,
++    });
++    expect(provider.createSession).toHaveBeenCalledOnce();
+   });
+ 
+   it("cancels an active transcription turn and closes the provider session", async () => {
+diff --git a/src/gateway/talk-transcription-relay.ts b/src/gateway/talk-transcription-relay.ts
+index ee3879a9cc..9e69247682 100644
+--- a/src/gateway/talk-transcription-relay.ts
++++ b/src/gateway/talk-transcription-relay.ts
+@@ -16,8 +16,18 @@ const MAX_AUDIO_BASE64_BYTES = 512 * 1024;
+ const MAX_TRANSCRIPTION_SESSIONS_PER_CONN = 2;
+ const MAX_TRANSCRIPTION_SESSIONS_GLOBAL = 64;
+ const TRANSCRIPTION_EVENT = "talk.event";
+-const RELAY_INPUT_ENCODING = "g711_ulaw";
+-const RELAY_INPUT_SAMPLE_RATE_HZ = 8000;
++// Defaults retained for cloud STT providers (OpenAI, Deepgram, etc.) whose
++// wire format is g711_ulaw at 8 kHz. Providers can override via providerConfig
++// (encoding / sampleRate) — see resolveRelayInputAudioConfig below.
++const DEFAULT_RELAY_INPUT_ENCODING: RelayInputEncoding = "g711_ulaw";
++const DEFAULT_RELAY_INPUT_SAMPLE_RATE_HZ = 8000;
++
++type RelayInputEncoding = "g711_ulaw" | "g711_alaw" | "pcm16";
++
++type ResolvedRelayInputAudioConfig = {
++  inputEncoding: RelayInputEncoding;
++  inputSampleRateHz: number;
++};
+ 
+ type TalkTranscriptionRelayEventPayload =
+   | { transcriptionSessionId: string; type: "ready" }
+@@ -56,10 +66,7 @@ type TalkTranscriptionRelaySessionResult = {
+   mode: "transcription";
+   transport: "gateway-relay";
+   transcriptionSessionId: string;
+-  audio: {
+-    inputEncoding: "g711_ulaw";
+-    inputSampleRateHz: 8000;
+-  };
++  audio: ResolvedRelayInputAudioConfig;
+   expiresAt: number;
+ };
+ 
+@@ -113,24 +120,19 @@ function inferSampleRateFromAudioFormat(value: unknown): number | undefined {
+   return match ? readFiniteNumber(match[1]) : undefined;
+ }
+ 
+-function assertRelayInputAudioConfig(providerConfig: RealtimeTranscriptionProviderConfig): void {
++function resolveRelayInputAudioConfig(
++  providerConfig: RealtimeTranscriptionProviderConfig,
++): ResolvedRelayInputAudioConfig {
+   const encodingValue =
+     providerConfig.encoding ?? providerConfig.audioFormat ?? providerConfig.audio_format;
+-  const encoding = normalizeRelayInputEncoding(encodingValue);
+-  if (encoding && encoding !== RELAY_INPUT_ENCODING) {
+-    throw new Error(
+-      `Gateway transcription relay requires ${RELAY_INPUT_ENCODING}/${RELAY_INPUT_SAMPLE_RATE_HZ} audio`,
+-    );
+-  }
++  const inputEncoding = normalizeRelayInputEncoding(encodingValue) ?? DEFAULT_RELAY_INPUT_ENCODING;
+ 
+-  const sampleRate =
++  const inputSampleRateHz =
+     readFiniteNumber(providerConfig.sampleRate ?? providerConfig.sample_rate) ??
+-    inferSampleRateFromAudioFormat(encodingValue);
+-  if (sampleRate && sampleRate !== RELAY_INPUT_SAMPLE_RATE_HZ) {
+-    throw new Error(
+-      `Gateway transcription relay requires ${RELAY_INPUT_ENCODING}/${RELAY_INPUT_SAMPLE_RATE_HZ} audio`,
+-    );
+-  }
++    inferSampleRateFromAudioFormat(encodingValue) ??
++    DEFAULT_RELAY_INPUT_SAMPLE_RATE_HZ;
++
++  return { inputEncoding, inputSampleRateHz };
+ }
+ 
+ function broadcastToOwner(
+@@ -208,7 +210,7 @@ export function createTalkTranscriptionRelaySession(
+   params: CreateTalkTranscriptionRelaySessionParams,
+ ): TalkTranscriptionRelaySessionResult {
+   enforceTranscriptionSessionLimits(params.connId);
+-  assertRelayInputAudioConfig(params.providerConfig);
++  const audioConfig = resolveRelayInputAudioConfig(params.providerConfig);
+   const transcriptionSessionId = randomUUID();
+   const expiresAtMs = Date.now() + TRANSCRIPTION_SESSION_TTL_MS;
+   const talk = createTalkSessionController(
+@@ -333,10 +335,7 @@ export function createTalkTranscriptionRelaySession(
+     mode: "transcription",
+     transport: "gateway-relay",
+     transcriptionSessionId,
+-    audio: {
+-      inputEncoding: RELAY_INPUT_ENCODING,
+-      inputSampleRateHz: RELAY_INPUT_SAMPLE_RATE_HZ,
+-    },
++    audio: audioConfig,
+     expiresAt: Math.floor(expiresAtMs / 1000),
+   };
+ }

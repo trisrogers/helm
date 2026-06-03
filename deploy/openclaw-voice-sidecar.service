@@ -22,6 +22,12 @@ ExecStart=/home/tris/projects/openclaw-voice-sidecar/.venv/bin/python -m sidecar
 # Loopback-only bind; explicit here so the unit documents the contract.
 Environment=SIDECAR_HOST=127.0.0.1
 Environment=SIDECAR_PORT=18790
+# CUDA runtime libs (cuBLAS/cuDNN/NVRTC) ship as nvidia-*-cu12 pip wheels inside
+# the venv. CTranslate2 (faster-whisper) dlopens libcublas.so.12 at GPU encode
+# time — model *load* doesn't need it, so a missing path stays hidden until the
+# first real (non-silence) transcription. `uv run` exposed these via the shell
+# env; systemd's clean env does not, so make the loader path explicit here.
+Environment=LD_LIBRARY_PATH=/home/tris/projects/openclaw-voice-sidecar/.venv/lib/python3.12/site-packages/nvidia/cublas/lib:/home/tris/projects/openclaw-voice-sidecar/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:/home/tris/projects/openclaw-voice-sidecar/.venv/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib
 Restart=always
 RestartSec=3
 # Whisper distil-large-v3 cold-load can take ~100s the very first time; give the

@@ -1,0 +1,31 @@
+# Helm — OpenClaw control UI, production instance.
+#
+# "Prod" here is a long-running Vite server bound to loopback :5174 (dev-mode,
+# not a dist build — see README.md "Deployment"). @vitejs/plugin-basic-ssl gives
+# it a self-signed cert so getUserMedia works over the tailnet hostname; the
+# persistent `tailscale serve` rule proxies tailnet :5174 → https+insecure://127.0.0.1:5174.
+#
+# Canonical source lives in the Helm repo (deploy/). Install with:
+#     npm run prod:install
+# then manage with: npm run prod:{up,down,status,logs}
+#
+# The Helm *dev* server (:5173) is intentionally NOT a unit — it's ephemeral,
+# tied to an active editing session.
+
+[Unit]
+Description=Helm — OpenClaw control UI (prod, tailnet :5174)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tris/projects/helm
+# Explicit node + vite entrypoint so systemd's minimal env needs no PATH lookup,
+# mirroring the openclaw-gateway unit. --strictPort fails fast on a port clash
+# rather than silently drifting to 5175.
+ExecStart=/usr/bin/node /home/tris/projects/helm/node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5174 --strictPort
+Environment=PATH=/usr/bin:/home/tris/.local/bin:/usr/local/bin:/bin
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -8,11 +8,16 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "sidecar:install": "bash deploy/install-sidecar-service.sh",
+    "sidecar:install": "bash deploy/install-unit.sh openclaw-voice-sidecar.service",
     "sidecar:up": "systemctl --user start openclaw-voice-sidecar",
     "sidecar:down": "systemctl --user stop openclaw-voice-sidecar",
     "sidecar:status": "systemctl --user --no-pager status openclaw-voice-sidecar",
-    "sidecar:logs": "journalctl --user -u openclaw-voice-sidecar -f"
+    "sidecar:logs": "journalctl --user -u openclaw-voice-sidecar -f",
+    "prod:install": "bash deploy/install-unit.sh helm.service",
+    "prod:up": "systemctl --user start helm",
+    "prod:down": "systemctl --user stop helm",
+    "prod:status": "systemctl --user --no-pager status helm",
+    "prod:logs": "journalctl --user -u helm -f"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",

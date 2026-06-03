@@ -15,8 +15,11 @@
  *                                     ↓
  *                                  (cancel) → idle
  *
- * Out of scope for v0 (deferred to C4/C5/D):
- *   - Sentence-chunked TTS during streaming. v0 waits for the full reply.
+ * Streaming TTS (C4): sentences are extracted from the assistant stream and
+ * spoken as they complete; synthesis runs one chunk ahead of playback. See the
+ * "streaming TTS pipeline" region below.
+ *
+ * Out of scope still (deferred to C5/D):
  *   - Barge-in / cancel on user speech onset.
  *   - Silero VAD; mic capture uses the existing PTT/auto-detect pipeline.
  */
@@ -37,6 +40,11 @@ export interface PipelineCallbacks {
   onUserTranscript?: (text: string) => void;
   onAssistantText?: (text: string, streaming: boolean) => void;
   onError?: (err: Error) => void;
+  /** Fired when the failure is specifically the local voice sidecar being
+   *  unreachable (Whisper/Kokoro on :18790 down) rather than a generic per-turn
+   *  error, so the UI can show an actionable "Talk offline" state with a fix
+   *  instead of surfacing a raw `ECONNREFUSED` string. */
+  onStackUnavailable?: (detail: string) => void;
 }
 
 // Wire shape emitted by talk-transcription-relay.ts. The outer frame uses
@@ -79,6 +87,93 @@ interface TalkSpeakResult {
 
 const SAMPLE_RATE_INPUT = 16_000; // Whisper expects 16k PCM16 mono
 
+// Prepended to each spoken turn so the agent knows it's being voiced. Without
+// this the agent replies like a chat turn — markdown/lists (which TTS reads
+// awkwardly) and silent tool runs (dead air while a tool executes). The
+// pre-tool acknowledgment makes the agent stream a short spoken line BEFORE
+// calling a tool, which streaming TTS then voices ~1s in instead of after the
+// whole turn. The Helm transcript shows the clean utterance; only the session
+// message carries this prefix.
+const VOICE_TURN_DIRECTIVE =
+  "[Voice conversation — your reply is read aloud by text-to-speech. Answer in " +
+  "brief, natural spoken sentences. No markdown, asterisks, bullet points, " +
+  "headings, code blocks, or emoji. Do not prefix your reply with a name, " +
+  'speaker label, or "VOICE:" — just speak directly as yourself. If you need a ' +
+  'tool, first say one short spoken line acknowledging it (e.g. "Let me check ' +
+  'that for you"), then use the tool and continue. Keep it concise — this is a ' +
+  "conversation, not a document.]";
+
+/** Split streamed text into complete sentences. A sentence ends at .!? (plus
+ *  any trailing quotes/brackets) followed by whitespace, or at a newline.
+ *  Returns the consumed char count so the caller keeps the trailing partial
+ *  unsent until more text arrives (or the run ends). Note: may over-split on
+ *  abbreviations like "e.g." — acceptable for v0, speech still reads fine. */
+function splitCompleteSentences(pending: string): { sentences: string[]; consumed: number } {
+  const sentences: string[] = [];
+  const boundary = /[.!?]+["')\]]*\s+|\n+/g;
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = boundary.exec(pending)) !== null) {
+    const end = m.index + m[0].length;
+    const chunk = pending.slice(lastIndex, end).trim();
+    if (chunk) sentences.push(chunk);
+    lastIndex = end;
+  }
+  return { sentences, consumed: lastIndex };
+}
+
+// First-chunk chunking: speak the opening phrase fast rather than waiting for a
+// full sentence. Break on the first clause boundary (, ; : — or sentence end)
+// at/after MIN chars; if none appears by MAX chars, break at a word boundary.
+const FIRST_CHUNK_MIN = 12;
+const FIRST_CHUNK_MAX = 90;
+
+/** Find where the first spoken chunk should end within `pending`, or 0 if we
+ *  should wait for more text. When `flushTail` (run ended) speak whatever's left. */
+function findFirstChunkBoundary(pending: string, flushTail: boolean): number {
+  const re = /[,;:—.!?\n]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(pending)) !== null) {
+    const ch = m[0];
+    const end = m.index + 1;
+    if (end < FIRST_CHUNK_MIN) continue;
+    const after = pending[end];
+    const sentenceEnd = ch === '.' || ch === '!' || ch === '?' || ch === '\n';
+    if (after === undefined) {
+      // Boundary sits at the end of the text streamed so far. If it's a
+      // sentence end, dispatch now — waiting for trailing whitespace would
+      // strand the chunk when the model then pauses for a tool call (the
+      // acknowledgment "Let me check." would otherwise wait for the tool).
+      // Clause punctuation (, ; :) still waits, since it usually continues.
+      if (flushTail || sentenceEnd) return end;
+      continue;
+    }
+    if (/\s/.test(after)) return end;
+  }
+  if (pending.length >= FIRST_CHUNK_MAX) {
+    const sp = pending.slice(0, FIRST_CHUNK_MAX).lastIndexOf(' ');
+    if (sp >= FIRST_CHUNK_MIN) return sp + 1;
+  }
+  return flushTail ? pending.length : 0;
+}
+
+/** True when an error message indicates the local voice sidecar (Whisper/Kokoro
+ *  on 127.0.0.1:18790) is unreachable — connection refused/reset, or the gateway
+ *  reporting an unknown transcription session because the relay's sidecar socket
+ *  dropped. Lets the UI offer a fix instead of echoing a raw transport error. */
+function isStackUnavailable(msg: string): boolean {
+  return /ECONNREFUSED|ECONNRESET|18790|connection refused|Unknown transcription Talk session/i.test(
+    msg,
+  );
+}
+
+/** Strip a leading speaker label the model sometimes prepends despite the
+ *  voice directive (e.g. "THE VOICE: …", "Assistant: …"). Idempotent and only
+ *  matches at the very start, so it's safe to apply to cumulative deltas. */
+function stripSpeakerLabel(text: string): string {
+  return text.replace(/^\s*(?:the\s+voice|voice|assistant|ai)\s*:\s*/i, '');
+}
+
 export class TalkPipeline {
   private state: PipelineState = 'idle';
   private chatSessionKey: string | null = null;
@@ -91,6 +186,20 @@ export class TalkPipeline {
   private audioCtx: AudioContext | null = null;
   private replyTextSoFar = ''; // cumulative assistant text for current run
   private finalizeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // ── streaming TTS pipeline (C4) ──────────────────────────────────────
+  // Sentences are extracted from the streaming assistant text and spoken as
+  // they complete, rather than waiting for the whole reply. Synthesis runs one
+  // chunk ahead of playback so sentence N+1 is being synthesized while N plays.
+  private ttsQueue: string[] = []; // sentences awaiting synthesis, in order
+  private audioQueue: AudioBuffer[] = []; // decoded buffers awaiting playback, in order
+  private synthInFlight = false;
+  private playInFlight = false;
+  private runEnded = false; // assistant run finished; once queues drain we go idle
+  private spokenUpTo = 0; // chars of replyTextSoFar already dispatched to TTS
+  private sentFirstChunk = false; // first (clause-level) chunk of this turn dispatched
+  private lastDispatchedChunk = ''; // re-anchor spokenUpTo if the cumulative text is rewritten mid-turn
+  private ttsGen = 0; // bumped on reset; in-flight synth from an old gen is discarded
 
   private readonly client: OpenClawClient;
   private readonly agentId: string;
@@ -110,6 +219,13 @@ export class TalkPipeline {
   async start(): Promise<void> {
     if (this.state !== 'idle') return;
 
+    // Create + resume the playback AudioContext now, while we're still inside
+    // the mic-tap user gesture. If we defer this to when the reply audio is
+    // ready (mid async response), the browser's autoplay policy leaves the
+    // context suspended until the *next* gesture — which made this turn's voice
+    // only play after the next mic tap.
+    this.ensurePlaybackContext();
+
     try {
       await this.ensureChatSession();
       await this.ensureGlobalSubscriptions();
@@ -128,7 +244,7 @@ export class TalkPipeline {
         sessionId: talkSess.sessionId,
         targetSampleRateHz: SAMPLE_RATE_INPUT,
         initiallyActive: true,
-        onError: (err) => this.callbacks.onError?.(err as Error),
+        onError: (err) => this.reportFailure(err instanceof Error ? err.message : String(err)),
       });
       this.captureHandle = handle;
       this.callbacks.onMicHandle?.(handle);
@@ -147,10 +263,7 @@ export class TalkPipeline {
     this.setState('finalizing');
 
     // Stop pumping audio first so no more frames race in after close.
-    this.captureHandle?.setActive(false);
-    this.captureHandle?.stop();
-    this.captureHandle = null;
-    this.callbacks.onMicHandle?.(null);
+    this.stopCapture();
 
     // Closing the transcription session triggers the sidecar to finalize STT,
     // which emits transcript.done on talk.event. The handler picks it up.
@@ -187,6 +300,7 @@ export class TalkPipeline {
     this.callbacks.onMicHandle?.(null);
 
     this.stopPlayback();
+    this.resetTtsState(); // drop any queued/in-flight TTS chunks
 
     if (this.currentRunId && this.chatSessionKey) {
       try {
@@ -226,6 +340,14 @@ export class TalkPipeline {
     if (this.state === next) return;
     this.state = next;
     this.callbacks.onStateChange?.(next);
+  }
+
+  /** Tear down the mic capture. Idempotent — safe to call when already stopped. */
+  private stopCapture() {
+    this.captureHandle?.setActive(false);
+    this.captureHandle?.stop();
+    this.captureHandle = null;
+    this.callbacks.onMicHandle?.(null);
   }
 
   private async ensureChatSession(): Promise<void> {
@@ -275,18 +397,31 @@ export class TalkPipeline {
         this.setState('idle');
       }
     } else if (talkType === 'session.error' || e.type === 'error') {
+      this.stopCapture();
       const msg = e.message ?? e.talkEvent?.payload?.message ?? 'transcription error';
       this.clearFinalizeTimer();
-      this.callbacks.onError?.(new Error(String(msg)));
+      this.reportFailure(String(msg));
       this.talkSessionId = null;
       this.setState('idle');
     } else if (e.type === 'close' && e.reason === 'error') {
       // Relay closed the session abnormally (e.g. sidecar error). The normal
       // "completed" close is ignored — transcript.done is still coming.
+      this.stopCapture();
       this.clearFinalizeTimer();
-      this.callbacks.onError?.(new Error('transcription session closed'));
+      this.reportFailure('transcription session closed');
       this.talkSessionId = null;
       this.setState('idle');
+    }
+  }
+
+  /** Route a failure to the right callback: a sidecar-unreachable condition gets
+   *  the actionable onStackUnavailable (if the consumer wired it); everything
+   *  else falls through to the generic onError. */
+  private reportFailure(msg: string) {
+    if (isStackUnavailable(msg) && this.callbacks.onStackUnavailable) {
+      this.callbacks.onStackUnavailable(msg);
+    } else {
+      this.callbacks.onError?.(new Error(msg));
     }
   }
 
@@ -303,11 +438,11 @@ export class TalkPipeline {
       return;
     }
     this.setState('thinking');
-    this.replyTextSoFar = '';
+    this.resetTtsState();
     try {
       const res = await this.client.call<{ runId?: string }>('sessions.send', {
         key: this.chatSessionKey,
-        message: text,
+        message: `${VOICE_TURN_DIRECTIVE}\n\n${text}`,
       });
       this.currentRunId = res.runId ?? null;
     } catch (err) {
@@ -322,50 +457,180 @@ export class TalkPipeline {
     if (!this.currentRunId || p.runId !== this.currentRunId) return;
 
     if (p.stream === 'assistant' && typeof p.data?.text === 'string') {
-      this.replyTextSoFar = p.data.text;
-      this.callbacks.onAssistantText?.(p.data.text, true);
+      this.replyTextSoFar = stripSpeakerLabel(p.data.text);
+      this.callbacks.onAssistantText?.(this.replyTextSoFar, true);
+      this.flushSentences(false); // speak any newly-completed sentences now
     } else if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-      const finalText = this.replyTextSoFar.trim();
       this.currentRunId = null;
-      this.callbacks.onAssistantText?.(finalText, false);
-      this.replyTextSoFar = '';
-      if (finalText) {
-        this.speakReply(finalText);
-      } else {
-        this.setState('idle');
-      }
+      this.callbacks.onAssistantText?.(this.replyTextSoFar.trim(), false);
+      this.flushSentences(true); // dispatch the trailing partial sentence
+      this.runEnded = true;
+      this.maybeFinish();
     }
   }
 
-  private async speakReply(text: string) {
-    this.setState('speaking');
-    try {
-      // talk.speak resolves the TTS provider server-side from gateway config
-      // (talk.provider); the request schema rejects a `provider` field. The
-      // gateway is configured to use tts-local-kokoro.
-      const res = await this.client.call<TalkSpeakResult>('talk.speak', { text });
-      if (!res?.audioBase64) {
-        this.setState('idle');
-        return;
+  // ── streaming TTS pipeline ───────────────────────────────────────────
+
+  /** Extract complete sentences from the streamed text and enqueue them.
+   *  When `flushTail` is set (run ended) the trailing partial is enqueued too. */
+  private flushSentences(flushTail: boolean) {
+    // Re-anchor spokenUpTo by searching for the last chunk we actually
+    // dispatched. The openclaw agent has been observed to rewrite the
+    // cumulative reply mid-turn (e.g. stripping a pre-tool acknowledgment once
+    // the tool finishes). With a static index we'd then start the tail from
+    // mid-word; anchoring on what we've spoken survives any prefix rewrite.
+    if (this.lastDispatchedChunk) {
+      const idx = this.replyTextSoFar.lastIndexOf(this.lastDispatchedChunk);
+      if (idx >= 0) {
+        let next = idx + this.lastDispatchedChunk.length;
+        while (next < this.replyTextSoFar.length && /\s/.test(this.replyTextSoFar[next])) next++;
+        this.spokenUpTo = next;
       }
-      await this.playAudio(res.audioBase64);
-    } catch (err) {
-      this.callbacks.onError?.(err as Error);
-    } finally {
+    }
+
+    // First chunk: break on the opening clause so the reply starts speaking
+    // fast, instead of waiting for the first full sentence.
+    if (!this.sentFirstChunk) {
+      const head = this.replyTextSoFar.slice(this.spokenUpTo);
+      const end = findFirstChunkBoundary(head, flushTail);
+      if (end > 0) {
+        const chunk = head.slice(0, end).trim();
+        if (chunk) this.enqueueTts(chunk);
+        this.spokenUpTo += end;
+        this.sentFirstChunk = true;
+      } else if (!flushTail) {
+        return; // not enough text yet for a first chunk
+      }
+    }
+
+    const pending = this.replyTextSoFar.slice(this.spokenUpTo);
+    const { sentences, consumed } = splitCompleteSentences(pending);
+    for (const s of sentences) this.enqueueTts(s);
+    this.spokenUpTo += consumed;
+    if (flushTail) {
+      const tail = this.replyTextSoFar.slice(this.spokenUpTo).trim();
+      if (tail) this.enqueueTts(tail);
+      this.spokenUpTo = this.replyTextSoFar.length;
+    }
+  }
+
+  private enqueueTts(text: string) {
+    this.lastDispatchedChunk = text;
+    this.ttsQueue.push(text);
+    this.pumpSynth();
+  }
+
+  /** Synthesize one chunk at a time, running ahead of playback. */
+  private pumpSynth() {
+    if (this.synthInFlight) return;
+    const text = this.ttsQueue.shift();
+    if (text === undefined) return;
+    this.synthInFlight = true;
+    const gen = this.ttsGen;
+    // talk.speak resolves the TTS provider server-side from gateway config
+    // (talk.provider → tts-local-kokoro); the schema rejects a `provider` field.
+    this.client
+      .call<TalkSpeakResult>('talk.speak', { text })
+      .then((res) => {
+        if (!res?.audioBase64) {
+          console.warn('[talk] talk.speak returned no audio for chunk:', JSON.stringify(text));
+          return null;
+        }
+        return this.decodeChunk(res.audioBase64);
+      })
+      .then((buf) => {
+        if (gen !== this.ttsGen) return; // turn was reset/cancelled mid-flight
+        if (!buf) {
+          console.warn('[talk] decode failed; dropping chunk:', JSON.stringify(text));
+          return;
+        }
+        this.audioQueue.push(buf);
+        this.pumpPlay();
+      })
+      .catch((err) => {
+        if (gen === this.ttsGen) this.callbacks.onError?.(err as Error);
+      })
+      .finally(() => {
+        if (gen !== this.ttsGen) return; // stale: a newer turn owns the pipeline
+        this.synthInFlight = false;
+        this.pumpSynth(); // next chunk
+        this.maybeFinish();
+      });
+  }
+
+  /** Play decoded buffers strictly in order, one at a time. */
+  private pumpPlay() {
+    if (this.playInFlight) return;
+    const buf = this.audioQueue.shift();
+    if (!buf) return;
+    if (this.state !== 'speaking') this.setState('speaking');
+    this.playInFlight = true;
+    this.playBuffer(buf)
+      .catch(() => {})
+      .finally(() => {
+        this.playInFlight = false;
+        this.pumpPlay(); // next buffer
+        this.maybeFinish();
+      });
+  }
+
+  /** When queues drain: go idle if the run ended, else fall back to "thinking"
+   *  (we spoke an acknowledgment and are now waiting on a tool / more text). */
+  private maybeFinish() {
+    const drained =
+      !this.synthInFlight &&
+      !this.playInFlight &&
+      this.ttsQueue.length === 0 &&
+      this.audioQueue.length === 0;
+    if (!drained) return;
+    if (this.runEnded) {
+      this.resetTtsState();
       this.setState('idle');
+    } else if (this.state === 'speaking') {
+      // Acknowledgment finished but the turn is still running (tool in flight).
+      this.setState('thinking');
     }
   }
 
-  private async playAudio(base64: string): Promise<void> {
+  private resetTtsState() {
+    this.stopPlayback(); // hard-stop any lingering source so it can't bleed into the next turn
+    this.ttsGen++; // invalidate any in-flight synth from the previous turn
+    this.ttsQueue = [];
+    this.audioQueue = [];
+    this.synthInFlight = false;
+    this.playInFlight = false;
+    this.runEnded = false;
+    this.spokenUpTo = 0;
+    this.sentFirstChunk = false;
+    this.lastDispatchedChunk = '';
+    this.replyTextSoFar = '';
+  }
+
+  /** Get the playback context, creating it and kicking a resume if suspended.
+   *  Called from start() (within the mic gesture) so the context is running
+   *  before any audio needs to play; resume() is fire-and-forget (not awaited)
+   *  so a stale autoplay block can't stall the synth pipeline. */
+  private ensurePlaybackContext(): AudioContext {
+    const ctx = (this.audioCtx ??= new AudioContext());
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    return ctx;
+  }
+
+  private async decodeChunk(base64: string): Promise<AudioBuffer | null> {
     const bin = atob(base64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-
-    const ctx = (this.audioCtx ??= new AudioContext());
-    if (ctx.state === 'suspended') {
-      try { await ctx.resume(); } catch { /* ignore */ }
+    // decodeAudioData works on a suspended context; no need to await resume.
+    const ctx = this.ensurePlaybackContext();
+    try {
+      return await ctx.decodeAudioData(bytes.buffer);
+    } catch {
+      return null;
     }
-    const buf = await ctx.decodeAudioData(bytes.buffer);
+  }
+
+  private playBuffer(buf: AudioBuffer): Promise<void> {
+    const ctx = this.ensurePlaybackContext();
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);

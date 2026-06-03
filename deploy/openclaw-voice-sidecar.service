@@ -1,0 +1,32 @@
+# OpenClaw Voice Sidecar — Whisper STT + Kokoro TTS for Helm Talk mode.
+#
+# Canonical source lives in the Helm repo (deploy/). Install it with:
+#     npm run sidecar:install      # copies this unit, daemon-reload, enable --now
+# then manage it with: npm run sidecar:{up,down,status,logs}
+#
+# The sidecar code itself lives in the sibling repo ~/projects/openclaw-voice-sidecar
+# (FastAPI + uvicorn). It binds loopback only (127.0.0.1:18790) — no network exposure.
+# The Helm gateway's talk-voice relay patch connects out to it; see
+# docs/talk-mode-deployment.md.
+
+[Unit]
+Description=OpenClaw Voice Sidecar (Whisper STT + Kokoro TTS) for Helm Talk
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tris/projects/openclaw-voice-sidecar
+# Call the venv interpreter directly — systemd's minimal env has no uv/snap on PATH,
+# and the project is installed into this venv, so `python -m sidecar` resolves cleanly.
+ExecStart=/home/tris/projects/openclaw-voice-sidecar/.venv/bin/python -m sidecar
+# Loopback-only bind; explicit here so the unit documents the contract.
+Environment=SIDECAR_HOST=127.0.0.1
+Environment=SIDECAR_PORT=18790
+Restart=always
+RestartSec=3
+# Whisper distil-large-v3 cold-load can take ~100s the very first time; give the
+# model load room before systemd considers a slow start a failure.
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

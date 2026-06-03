@@ -158,6 +158,9 @@ export default function Talk({ theme }: Props) {
   const [catalog, setCatalog] = useState<TalkCatalog | null>(null);
   const [transcript, setTranscript] = useState<{ user?: string; agent?: string }>({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Set when the pipeline reports the local voice sidecar (:18790) is unreachable.
+  // Distinct from errorMsg so we can show an actionable "Talk offline" banner.
+  const [stackOffline, setStackOffline] = useState<string | null>(null);
   const [pttActive, setPttActive] = useState(false);
   const [micState, setMicState] = useState<'off' | 'requesting' | 'on' | 'denied' | 'error'>('off');
   const [level, setLevel] = useState(0);
@@ -238,6 +241,7 @@ export default function Talk({ theme }: Props) {
   const startPipelined = useCallback(async () => {
     if (!client || !agentId) return;
     setErrorMsg(null);
+    setStackOffline(null);
     setTranscript({});
     if (!pipelineRef.current) {
       pipelineRef.current = new TalkPipeline(client, agentId, {
@@ -245,6 +249,7 @@ export default function Talk({ theme }: Props) {
         onUserTranscript: (text) => setTranscript(prev => ({ ...prev, user: text || prev.user })),
         onAssistantText: (text) => setTranscript(prev => ({ ...prev, agent: text || prev.agent })),
         onError: (err) => setErrorMsg(err.message),
+        onStackUnavailable: (detail) => { setStackOffline(detail); setMicState('off'); },
         onMicHandle: (handle) => {
           // Hook waveform when capture starts; tear it down when it stops.
           waveformCleanupRef.current?.();
@@ -383,6 +388,7 @@ export default function Talk({ theme }: Props) {
 
   const statusText = (() => {
     if (status !== 'connected') return 'Disconnected';
+    if (stackOffline) return 'Talk offline';
     if (stackMode === 'pipelined') {
       if (micState === 'denied') return 'Mic denied — enable in browser settings';
       if (micState === 'error') return errorMsg ?? 'Mic error';
@@ -454,9 +460,36 @@ export default function Talk({ theme }: Props) {
 
       <div className="talk-status">{statusText}</div>
 
-      {errorMsg && (
+      {errorMsg && !stackOffline && (
         <div style={{ fontSize: '11px', color: 'var(--err)', textAlign: 'center', maxWidth: '440px' }}>
           {errorMsg}
+        </div>
+      )}
+
+      {stackOffline && (
+        <div
+          style={{
+            maxWidth: '460px', textAlign: 'center', background: 'var(--surf)',
+            border: '1px solid var(--err)', borderRadius: 'var(--r)', padding: '12px 16px',
+            display: 'flex', flexDirection: 'column', gap: '6px',
+          }}
+        >
+          <div style={{ fontSize: '12px', color: 'var(--err)', fontWeight: 600 }}>
+            Talk offline — voice sidecar unreachable
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--ink2)' }}>
+            The local Whisper + Kokoro service on <code>:18790</code> isn’t responding.
+            Start it, then tap the mic again:
+          </div>
+          <code
+            style={{
+              fontSize: '11px', fontFamily: 'var(--fm)', color: 'var(--ink)',
+              background: 'var(--bg)', borderRadius: '4px', padding: '4px 8px',
+            }}
+          >npm run sidecar:up</code>
+          <div style={{ fontSize: '9px', color: 'var(--ink2)', opacity: 0.7, fontFamily: 'var(--fm)' }}>
+            {stackOffline}
+          </div>
         </div>
       )}
 

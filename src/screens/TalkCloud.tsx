@@ -78,8 +78,12 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   }, [configId, connected, status.value, connect]);
 
   // Ensure the EVI socket is closed if this screen unmounts mid-call (e.g. nav
-  // away, or the theme-keyed remount on a theme switch).
-  useEffect(() => () => { disconnect().catch(() => {}); }, [disconnect]);
+  // away, or the theme-keyed remount on a theme switch). Use a latest-ref so this
+  // fires ONLY on unmount — depending on [disconnect] would re-run every render
+  // (voice-react returns a fresh disconnect each time) and spin into a loop.
+  const disconnectRef = useRef(disconnect);
+  disconnectRef.current = disconnect;
+  useEffect(() => () => { disconnectRef.current().catch(() => {}); }, []);
 
   const transcript = useMemo(
     () => messages.filter(

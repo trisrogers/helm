@@ -2,6 +2,31 @@
 
 Control surface for the OpenClaw AI gateway. Vite + React + TypeScript SPA.
 
+## CR tracker (bugs + feature requests)
+
+An interactive change-request board lives on the artifacts gallery:
+- **URL:** http://localhost:4200/a/2026-06-06-the-helm-cr-tracker/ (LAN: http://192.168.1.46:4200/...)
+- **State:** `~/artifacts/2026-06-06-the-helm-cr-tracker/feedback.json` — JSON `{crs:[...]}`
+  chunked across `values` keys `st-0, st-1, …` with `st-n` = chunk count.
+- **Screenshots:** `~/artifacts/2026-06-06-the-helm-cr-tracker/cr-images/<id>.<ext>` (Claude-readable).
+
+**Status workflow:** `backlog → ready → inprogress → built → testing → review → done` (+ `wontdo`).
+
+**Backlog rule:** Backlog is the user's parked triage space — **never action a Backlog CR.**
+Only `ready` ("Ready for Claude") CRs are the signal to start. As you work one, advance it
+(`inprogress` → `built`/`testing` → `review` for sign-off → `done`).
+
+Read CRs back in a session:
+```python
+import json
+v = json.load(open("/home/tris/artifacts/2026-06-06-the-helm-cr-tracker/feedback.json"))["values"]
+state = json.loads("".join(v[f"st-{i}"] for i in range(v["st-n"]))) if v.get("st-n") else {"crs":[]}
+ready = [c for c in state["crs"] if c["status"] == "ready"]   # the ones to action
+```
+Updating status: GET → overlay only the CRs you changed → chunked POST (9 KB/chunk) to
+`http://localhost:4200/api/artifacts/2026-06-06-the-helm-cr-tracker/feedback` — never blind-write
+the whole array (a browser tab may be editing concurrently).
+
 ## Dev server
 
 ```bash

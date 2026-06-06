@@ -205,6 +205,11 @@ export class TalkPipeline {
   private readonly agentId: string;
   private readonly callbacks: PipelineCallbacks;
 
+  // TTS voice for this pipeline, applied to every talk.speak call. Settable
+  // between turns so a theme switch takes effect on the next turn.
+  private voiceId: string | undefined;
+  private speed: number | undefined;
+
   constructor(client: OpenClawClient, agentId: string, callbacks: PipelineCallbacks) {
     this.client = client;
     this.agentId = agentId;
@@ -213,6 +218,13 @@ export class TalkPipeline {
 
   getState(): PipelineState {
     return this.state;
+  }
+
+  /** Set the Kokoro voice + speed used for synthesis. Picked from the active
+   *  theme (see THEME_VOICE); forwarded to the gateway's talk.speak. */
+  setVoice(voiceId: string | undefined, speed: number | undefined): void {
+    this.voiceId = voiceId;
+    this.speed = speed;
   }
 
   /** Begin recording a new turn. Idempotent if already recording. */
@@ -529,8 +541,13 @@ export class TalkPipeline {
     const gen = this.ttsGen;
     // talk.speak resolves the TTS provider server-side from gateway config
     // (talk.provider → tts-local-kokoro); the schema rejects a `provider` field.
+    // voiceId/speed ARE accepted and routed to the sidecar via the provider's
+    // resolveTalkOverrides hook (per-theme voice).
+    const speakParams: { text: string; voiceId?: string; speed?: number } = { text };
+    if (this.voiceId) speakParams.voiceId = this.voiceId;
+    if (this.speed != null) speakParams.speed = this.speed;
     this.client
-      .call<TalkSpeakResult>('talk.speak', { text })
+      .call<TalkSpeakResult>('talk.speak', speakParams)
       .then((res) => {
         if (!res?.audioBase64) {
           console.warn('[talk] talk.speak returned no audio for chunk:', JSON.stringify(text));

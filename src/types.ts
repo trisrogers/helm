@@ -52,3 +52,14 @@ export const THEME_META: Record<Theme, { name: string; sub: string }> = {
   politburo: { name: 'Politburo', sub: 'State Intelligence Network' },
   blizzard: { name: 'First Blizzard', sub: 'Great Bear Lake Station' },
 };
+
+/** Talk-mode TTS voice per theme. `voiceId` is a Kokoro voice; `speed` is the
+ *  Kokoro speed multiplier (~0.5–2.0). Forwarded to the gateway's talk.speak,
+ *  which routes them to the tts-local-kokoro sidecar.
+ *  NOTE: politburo wants a Russian accent, which Kokoro v1.0 can't do — bf_alice
+ *  is a stern British stand-in until a Russian-capable engine is wired in. */
+export const THEME_VOICE: Record<Theme, { voiceId: string; speed: number }> = {
+  blizzard: { voiceId: 'am_onyx', speed: 1.0 },
+  assay: { voiceId: 'bm_lewis', speed: 1.15 },
+  politburo: { voiceId: 'bf_alice', speed: 1.1 },
+};

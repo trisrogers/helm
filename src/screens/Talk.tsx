@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type Theme } from '../types';
+import { type Theme, THEME_VOICE } from '../types';
 import { useGateway } from '../context/GatewayContext';
 import { consumeHandoff, type TalkHandoff } from '../lib/handoff';
 import {
@@ -267,6 +267,10 @@ export default function Talk({ theme }: Props) {
         },
       });
     }
+    // Apply the active theme's voice before each turn so a theme switch (the
+    // pipeline is created once and reused) takes effect on the next turn.
+    const v = THEME_VOICE[theme];
+    pipelineRef.current.setVoice(v.voiceId, v.speed);
     try {
       setMicState('requesting');
       await pipelineRef.current.start();
@@ -274,7 +278,7 @@ export default function Talk({ theme }: Props) {
       setErrorMsg(e instanceof Error ? e.message : 'pipeline.start failed');
       setMicState('error');
     }
-  }, [client, agentId]);
+  }, [client, agentId, theme]);
 
   const stopPipelined = useCallback(async () => {
     await pipelineRef.current?.stopRecord();

@@ -431,7 +431,11 @@ export default function Talk({ theme }: Props) {
   // Cloud (EVI) is a separate client-side path; render it instead of the local
   // pipeline UI. All hooks above still run but stay inert (no session created).
   if (talkMode === 'cloud') {
-    return <TalkCloud theme={theme} mode={talkMode} onModeChange={setTalkMode} />;
+    // key={theme}: an EVI session is bound to one config (voice+persona), so
+    // switching theme must start a fresh session. Remounting tears down the old
+    // VoiceProvider (and its socket) instead of trying to reconnect in place —
+    // which voice-react ignores as a "duplicate connect" and leaves hung.
+    return <TalkCloud key={theme} theme={theme} mode={talkMode} onModeChange={setTalkMode} />;
   }
 
   return (

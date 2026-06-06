@@ -61,9 +61,10 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   }, [bridge, bridgeRef]);
 
   const connected = status.value === 'connected';
+  const busy = connecting || status.value === 'connecting';
 
   const start = useCallback(async () => {
-    if (!configId) return;
+    if (!configId || connected || status.value === 'connecting') return;
     setAuthError(null);
     setConnecting(true);
     try {
@@ -74,7 +75,11 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
     } finally {
       setConnecting(false);
     }
-  }, [configId, connect]);
+  }, [configId, connected, status.value, connect]);
+
+  // Ensure the EVI socket is closed if this screen unmounts mid-call (e.g. nav
+  // away, or the theme-keyed remount on a theme switch).
+  useEffect(() => () => { disconnect().catch(() => {}); }, [disconnect]);
 
   const transcript = useMemo(
     () => messages.filter(
@@ -91,7 +96,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   const statusText = (() => {
     if (gw !== 'connected') return 'Gateway disconnected';
     if (!configId) return 'No EVI config for this theme';
-    if (connecting) return 'Connecting…';
+    if (busy) return 'Connecting…';
     if (connected) return isMuted ? 'Muted' : (level > 0.04 ? 'Listening…' : 'Live');
     return 'Tap to begin';
   })();
@@ -167,7 +172,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
         <button
           className="mic-btn"
           style={{ transform: level > 0.05 ? 'scale(1.06)' : undefined, boxShadow: connected ? '0 0 24px var(--acc)' : undefined }}
-          disabled={gw !== 'connected' || !configId || connecting}
+          disabled={gw !== 'connected' || !configId || busy}
           onClick={() => (connected ? disconnect() : start())}
         >🎙</button>
 

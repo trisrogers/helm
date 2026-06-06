@@ -16,6 +16,10 @@ export default defineConfig({
       'react-dom': fileURLToPath(new URL('./node_modules/react-dom', import.meta.url)),
     },
   },
+  // Pre-bundle voice-react so its internal worklet/module URLs resolve
+  // consistently (an unbundled worklet can leave EVI connect() hung). Matches the
+  // spike config, which connected fine.
+  optimizeDeps: { include: ['react', 'react-dom', '@humeai/voice-react'] },
   server: {
     host: true,
     allowedHosts: ['.tail3aeb2d.ts.net', 'vostok-wsl'],

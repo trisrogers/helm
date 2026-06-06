@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "spike:evi": "vite --config spikes/hume-evi/vite.config.ts",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -27,6 +28,7 @@
     "@codemirror/language": "^6.12.3",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.0",
+    "@humeai/voice-react": "^0.2.14",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

@@ -68,13 +68,9 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
     setAuthError(null);
     setConnecting(true);
     try {
-      console.log('[evi] start — resolving auth, config:', configId);
       const auth = await resolveHumeAuth();
-      console.log('[evi] auth resolved:', auth.type, '— calling connect()');
       await connect({ auth, configId });
-      console.log('[evi] connect() resolved');
     } catch (e) {
-      console.error('[evi] connect failed:', e);
       setAuthError(e instanceof Error ? e.message : String(e));
     } finally {
       setConnecting(false);
@@ -209,9 +205,7 @@ export default function TalkCloud({ theme, mode, onModeChange }: Props) {
   return (
     <VoiceProvider
       onToolCall={onToolCall}
-      onError={(e) => console.error('[evi] provider error:', e)}
-      onOpen={() => console.log('[evi] socket open')}
-      onClose={(e) => console.log('[evi] socket close:', e)}
+      onError={(e) => console.error('[evi] error:', e.message)}
     >
       <Inner theme={theme} mode={mode} onModeChange={onModeChange} bridgeRef={bridgeRef} />
     </VoiceProvider>

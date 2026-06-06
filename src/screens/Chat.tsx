@@ -274,6 +274,10 @@ const SHOW_TOOLS_STORAGE = 'helm:chat:showTools';
 const SHOW_EMPTY_STORAGE = 'helm:chat:showEmpty';
 const CANVAS_WIDTH_STORAGE = 'helm:chat:canvasWidth';
 const canvasOpenStorage = (key: string) => `helm:chat:canvasOpen:${key}`;
+/** Last HTML we auto-seeded into a session's canvas. Lets us pick up *new*
+ *  chat HTML on open without re-clobbering the user's saved edits when nothing
+ *  newer has appeared. */
+const canvasLastSeedStorage = (key: string) => `helm:chat:canvasLastSeed:${key}`;
 const CANVAS_MIN_WIDTH = 360;
 const CANVAS_DEFAULT_WIDTH = 620;
 
@@ -891,23 +895,52 @@ export default function Chat({ theme: _theme }: ChatProps) {
 
   const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
 
-  // Open the canvas and seed it with the most recent assistant HTML (if any).
-  // Walks back so a trailing "Done!" reply doesn't shadow the HTML message.
-  const openCanvasWithLatestHTML = useCallback(() => {
-    if (!activeKey) return;
-    let html: string | null = null;
+  // Most recent assistant HTML in the thread (if any). Walks back so a
+  // trailing "Done!" reply doesn't shadow the HTML message.
+  const latestSessionHTML = useCallback((): string | null => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role !== 'assistant') continue;
       const found = extractHTMLFromAssistantText(m.text);
-      if (found) { html = found; break; }
+      if (found) return found;
     }
-    if (html) {
-      const label = active?.displayName ?? active?.derivedTitle ?? activeKey;
-      setCanvasSeed({ key: activeKey, html, label: `Chat session: ${label}` });
-    }
+    return null;
+  }, [messages]);
+
+  // Seed the canvas from the latest assistant HTML in the active session.
+  //  - force (explicit "Open in Canvas"): always seed when HTML exists.
+  //  - plain open (Canvas toggle): only seed when the latest HTML differs from
+  //    what we last auto-seeded, so reopening the canvas doesn't overwrite the
+  //    user's saved edits when no newer HTML has arrived.
+  const seedCanvasFromSession = useCallback((force = false) => {
+    if (!activeKey) return;
+    const html = latestSessionHTML();
+    if (!html) return;
+    let lastSeed: string | null = null;
+    try { lastSeed = localStorage.getItem(canvasLastSeedStorage(activeKey)); } catch { /* ignore */ }
+    if (!force && html === lastSeed) return;
+    const label = active?.displayName ?? active?.derivedTitle ?? activeKey;
+    setCanvasSeed({ key: activeKey, html, label: `Chat session: ${label}` });
+    try { localStorage.setItem(canvasLastSeedStorage(activeKey), html); } catch { /* quota */ }
+  }, [activeKey, latestSessionHTML, active]);
+
+  // Open the canvas, picking up the latest session HTML as it opens.
+  const openCanvasWithLatestHTML = useCallback(() => {
+    seedCanvasFromSession(true);
     setCanvasOpen(true);
-  }, [activeKey, messages, active, setCanvasOpen]);
+  }, [seedCanvasFromSession, setCanvasOpen]);
+
+  // If the canvas is already open (persisted) when we switch into / finish
+  // loading a session, pick up its latest HTML too — otherwise the canvas
+  // would sit on its default placeholder despite HTML being in the thread.
+  // The "only if new" guard inside seedCanvasFromSession protects saved edits.
+  useEffect(() => {
+    if (!canvasOpen || loadingMsgs) return;
+    seedCanvasFromSession();
+    // Intentionally not depending on seedCanvasFromSession/messages: we only
+    // want this on session-switch / load-complete, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeKey, canvasOpen, loadingMsgs]);
 
   // Context-usage bar.
   //
@@ -1238,9 +1271,13 @@ export default function Chat({ theme: _theme }: ChatProps) {
             <button
               className={`btn ${canvasOpen ? 'btn-on' : ''}`}
               style={{ padding: '3px 8px', fontSize: '10px' }}
-              onClick={() => setCanvasOpen(!canvasOpen)}
+              onClick={() => {
+                // Opening pulls in the latest HTML from the thread; closing just hides it.
+                if (!canvasOpen) seedCanvasFromSession();
+                setCanvasOpen(!canvasOpen);
+              }}
               disabled={!activeKey}
-              title="Toggle the design canvas alongside this chat"
+              title="Toggle the design canvas alongside this chat (picks up the latest HTML from the thread)"
             >⬚ Canvas</button>
           </div>
           <div className="survival-stats">

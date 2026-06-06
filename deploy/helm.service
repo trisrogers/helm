@@ -22,7 +22,10 @@ WorkingDirectory=/home/tris/projects/helm
 # Explicit node + vite entrypoint so systemd's minimal env needs no PATH lookup,
 # mirroring the openclaw-gateway unit. --strictPort fails fast on a port clash
 # rather than silently drifting to 5175.
-ExecStart=/usr/bin/node /home/tris/projects/helm/node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5174 --strictPort
+# --mode prod loads .env.local (config IDs) but NOT .env.development.local, so the
+# dev-only Hume API key is never inlined into the prod bundle; prod mints
+# short-lived EVI tokens via the sidecar /hume/token route instead.
+ExecStart=/usr/bin/node /home/tris/projects/helm/node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5174 --strictPort --mode prod
 Environment=PATH=/usr/bin:/home/tris/.local/bin:/usr/local/bin:/bin
 Restart=always
 RestartSec=3

@@ -22,6 +22,13 @@ ExecStart=/home/tris/projects/openclaw-voice-sidecar/.venv/bin/python -m sidecar
 # Loopback-only bind; explicit here so the unit documents the contract.
 Environment=SIDECAR_HOST=127.0.0.1
 Environment=SIDECAR_PORT=18790
+# Hume keys for Helm Talk "Cloud" mode token minting (GET /hume/token). Optional
+# (the leading - means a missing file is not an error); the route returns 503
+# until it exists. Create it (chmod 600) with:
+#   HUME_API_KEY=sk-...
+#   HUME_SECRET_KEY=...
+# Keeps the spendable keys server-side — they're never shipped to a browser.
+EnvironmentFile=-/home/tris/.openclaw-voice/hume.env
 # CUDA runtime libs (cuBLAS/cuDNN/NVRTC) ship as nvidia-*-cu12 pip wheels inside
 # the venv. CTranslate2 (faster-whisper) dlopens libcublas.so.12 at GPU encode
 # time — model *load* doesn't need it, so a missing path stays hidden until the

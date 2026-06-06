@@ -10,6 +10,9 @@ import {
   type PlaybackHandle,
 } from '../lib/talk-audio';
 import { TalkPipeline, type PipelineState } from '../lib/talk-pipeline';
+import { useTalkMode } from '../lib/talk-evi';
+import { TalkModeToggle } from './TalkModeToggle';
+import TalkCloud from './TalkCloud';
 
 interface Props { theme: Theme; }
 
@@ -165,6 +168,7 @@ export default function Talk({ theme }: Props) {
   const [micState, setMicState] = useState<'off' | 'requesting' | 'on' | 'denied' | 'error'>('off');
   const [level, setLevel] = useState(0);
   const [handoff, setHandoff] = useState<TalkHandoff | null>(() => consumeHandoff('talk'));
+  const [talkMode, setTalkMode] = useTalkMode();
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const captureRef = useRef<CaptureHandle | null>(null);
@@ -424,6 +428,12 @@ export default function Talk({ theme }: Props) {
     : 'NO PROVIDER';
   const recentEvents = useMemo(() => events.slice(-6).reverse(), [events]);
 
+  // Cloud (EVI) is a separate client-side path; render it instead of the local
+  // pipeline UI. All hooks above still run but stay inert (no session created).
+  if (talkMode === 'cloud') {
+    return <TalkCloud theme={theme} mode={talkMode} onModeChange={setTalkMode} />;
+  }
+
   return (
     <div id="screen-talk" className="screen">
       {handoff && (
@@ -454,6 +464,7 @@ export default function Talk({ theme }: Props) {
           style={{ fontSize: '9px', padding: '2px 6px' }}
           onClick={() => handleModeChange(mode === 'auto-detect' ? 'push-to-talk' : 'auto-detect')}
         >CHANGE</button>
+        <TalkModeToggle mode={talkMode} onChange={setTalkMode} />
       </div>
 
       <div className="talk-agent">{AGENT_NAME[theme]}</div>

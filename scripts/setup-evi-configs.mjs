@@ -19,6 +19,16 @@ const MODEL = process.env.HUME_MODEL || 'claude-sonnet-4-20250514';
 
 if (!KEY) { console.error('Set HUME_API_KEY'); process.exit(1); }
 
+// Appended to every persona prompt. ask_openclaw runs a full agent turn (often
+// several seconds), so EVI must speak a short "here's what I'm doing" line BEFORE
+// calling it — EVI voices assistant text that precedes a tool call, which fills
+// the otherwise-silent pause. Mirrors the local pipeline's pre-tool acknowledgment.
+const ACK =
+  ' IMPORTANT: ask_openclaw can take several seconds. Whenever you use it, FIRST ' +
+  'say one short spoken sentence telling the user what you are about to do — naming ' +
+  'the thing, e.g. "Let me pull up your recent emails" or "One moment, checking your ' +
+  'open tasks" — and THEN call the tool. Never call ask_openclaw without speaking first.';
+
 // agentName = how EVI refers to itself (matches AGENT_NAME in Talk.tsx).
 // voiceId = the user's custom Hume voice for that theme.
 const THEMES = {
@@ -133,21 +143,37 @@ const main = async () => {
   }
 
   const envLines = [];
+  let updatedInPlace = 0;
   for (const [theme, T] of Object.entries(THEMES)) {
-    const config = await api('/configs', {
+    const body = {
       evi_version: '3',
       name: `Helm — ${T.agentName} (${theme})`,
-      prompt: { text: T.prompt },
+      prompt: { text: T.prompt + ACK },
       voice: { provider: 'CUSTOM_VOICE', id: T.voiceId },
       language_model: { model_provider: 'ANTHROPIC', model_resource: MODEL, temperature: 0.7 },
       tools: toolIds,
-    });
-    console.log(`  config ${theme} (${T.agentName}) → ${config.id}`);
-    envLines.push(`VITE_HUME_CONFIG_${T.key}=${config.id}`);
+    };
+    // If the config ID is already known (passed via env), create a new VERSION of
+    // it in place — stable ID, EVI uses the latest version, so no .env.local change
+    // or prod restart. Otherwise create a fresh config.
+    const existing = process.env[`VITE_HUME_CONFIG_${T.key}`];
+    if (existing) {
+      const config = await api(`/configs/${existing}`, body); // createConfigVersion
+      console.log(`  updated ${theme} (${T.agentName}) → ${config.id} v${config.version}`);
+      updatedInPlace++;
+    } else {
+      const config = await api('/configs', body);
+      console.log(`  created ${theme} (${T.agentName}) → ${config.id}`);
+      envLines.push(`VITE_HUME_CONFIG_${T.key}=${config.id}`);
+    }
   }
 
-  console.log('\n✅ Configs created. Add to repo-root .env.local:\n');
-  console.log(envLines.join('\n'));
+  if (envLines.length) {
+    console.log('\n✅ New configs created. Add to repo-root .env.local:\n');
+    console.log(envLines.join('\n'));
+  } else {
+    console.log(`\n✅ Updated ${updatedInPlace} configs in place (new versions). Just reconnect — no env change or restart needed.`);
+  }
 };
 
 main().catch((e) => { console.error('\n❌', e.message); process.exit(1); });

@@ -30,7 +30,11 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   bridgeRef: React.MutableRefObject<ToolCallHandler | null>;
 }) {
   const { client, status: gw } = useGateway();
-  const { connect, disconnect, status, messages, micFft, isMuted, mute, unmute, error } = useVoice();
+  const { connect, disconnect, status, messages, micFft, isMuted, mute, unmute, error, sendAssistantInput } = useVoice();
+  // Latest sendAssistantInput, so the (memoized) bridge can stream the agent's
+  // reply into EVI's voice without being rebuilt each render.
+  const speakRef = useRef(sendAssistantInput);
+  speakRef.current = sendAssistantInput;
   const [agentId, setAgentId] = useState<string | null>(null);
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [connecting, setConnecting] = useState(false);
@@ -53,6 +57,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
     if (!client || !agentId) return null;
     return new OpenclawVoiceBridge(client, agentId, {
       onTool: (e) => setTools((prev) => [{ id: ++toolSeq.current, ...e }, ...prev].slice(0, 12)),
+      onSpeak: (text) => speakRef.current?.(text),
     });
   }, [client, agentId]);
   useEffect(() => {

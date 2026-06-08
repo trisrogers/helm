@@ -24,10 +24,11 @@ if (!KEY) { console.error('Set HUME_API_KEY'); process.exit(1); }
 // calling it — EVI voices assistant text that precedes a tool call, which fills
 // the otherwise-silent pause. Mirrors the local pipeline's pre-tool acknowledgment.
 const ACK =
-  ' IMPORTANT: ask_openclaw can take several seconds. Whenever you use it, FIRST ' +
-  'say one short spoken sentence telling the user what you are about to do — naming ' +
-  'the thing, e.g. "Let me pull up your recent emails" or "One moment, checking your ' +
-  'open tasks" — and THEN call the tool. Never call ask_openclaw without speaking first.';
+  ' IMPORTANT: ask_openclaw can take several seconds, and its answer is spoken to the ' +
+  'user automatically as it streams. So whenever you use it: FIRST say one short spoken ' +
+  'sentence telling the user what you are about to do — naming the thing, e.g. "Let me ' +
+  'pull up your recent emails" or "One moment, checking your open tasks" — THEN call the ' +
+  'tool, and do NOT read its answer back yourself afterwards; it has already been spoken.';
 
 // agentName = how EVI refers to itself (matches AGENT_NAME in Talk.tsx).
 // voiceId = the user's custom Hume voice for that theme.
@@ -41,7 +42,7 @@ const THEMES = {
       'precise, slightly ornate authority, in brief natural spoken sentences (no lists, ' +
       'no markdown). For a quick read of the gateway use get_camp_status / list_sessions / ' +
       'get_usage. For anything else — email, files, tasks, web, memory, multi-step work — ' +
-      'delegate to the OpenClaw agent via ask_openclaw and relay its answer in your own voice.',
+      'delegate to the OpenClaw agent via ask_openclaw.',
   },
   politburo: {
     key: 'POLITBURO',
@@ -52,7 +53,7 @@ const THEMES = {
       'utilitarian cadence, in brief spoken sentences (no lists, no markdown). For a quick ' +
       'read of the apparatus use get_camp_status / list_sessions / get_usage. For anything ' +
       'else — email, files, directives, web, memory, multi-step work — delegate to the ' +
-      'OpenClaw agent via ask_openclaw and report its answer.',
+      'OpenClaw agent via ask_openclaw.',
   },
   blizzard: {
     key: 'BLIZZARD',
@@ -64,7 +65,7 @@ const THEMES = {
       'sentences (no lists, no markdown). For a quick read of the camp instruments use ' +
       'get_camp_status / list_sessions / get_usage. For anything else — email, field docs, ' +
       'expeditions, web, memory, multi-step work — delegate to the OpenClaw agent via ' +
-      'ask_openclaw and relay its answer.',
+      'ask_openclaw.',
   },
 };
 

@@ -84,9 +84,44 @@ const FAST_TOOLS: Record<string, string> = {
 
 const ASK_TIMEOUT_MS = 60_000;
 
+// Prepended to every ask_openclaw turn so the agent replies in spoken-friendly
+// prose (its text is synthesized verbatim, so markdown/lists read badly aloud).
+const VOICE_DIRECTIVE =
+  '[Voice relay — your reply is spoken aloud by text-to-speech as you write it. Use ' +
+  'brief, natural spoken sentences. No markdown, lists, headings, code blocks, ' +
+  'asterisks, or emoji. Do not prefix your reply with a name or speaker label.]';
+
+// Returned as the tool result once the answer has already been streamed to EVI's
+// voice, so the supplemental LLM doesn't read the whole thing back a second time.
+const STREAMED_SENTINEL =
+  '[Delivered. The full answer has already been spoken to the user, verbatim, as it ' +
+  'streamed. Do NOT repeat, summarize, paraphrase, or read any of it back — reply ' +
+  'with nothing, or at most one short natural closing remark if clearly warranted.]';
+
+/** Split newly-arrived cumulative text into complete sentences from `from`.
+ *  A sentence is complete only once trailing whitespace/newline follows its
+ *  terminator, so we never speak a half-formed token mid-stream. */
+function nextSentences(text: string, from: number): { sentences: string[]; consumed: number } {
+  const sub = text.slice(from);
+  const boundary = /[.!?]+["')\]]*\s+|\n+/g;
+  const sentences: string[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = boundary.exec(sub)) !== null) {
+    const end = m.index + m[0].length;
+    const chunk = sub.slice(last, end).trim();
+    if (chunk) sentences.push(chunk);
+    last = end;
+  }
+  return { sentences, consumed: from + last };
+}
+
 export interface BridgeCallbacks {
   /** Each tool invocation, for the on-screen activity log. */
   onTool?: (entry: { name: string; ok: boolean; ms: number; detail: string }) => void;
+  /** When set, ask_openclaw streams the agent's reply here sentence-by-sentence
+   *  (wired to EVI's sendAssistantInput) instead of returning it all at once. */
+  onSpeak?: (text: string) => void;
 }
 
 /**
@@ -130,41 +165,62 @@ export class OpenclawVoiceBridge {
         return fail(`no bridge for tool "${msg.name}"`, 'unknown_tool');
       }
       const ms = Math.round(performance.now() - started);
-      this.cb.onTool?.({ name: msg.name, ok: true, ms, detail: content.slice(0, 300) });
+      const detail = content === STREAMED_SENTINEL ? 'spoken live (streamed)' : content.slice(0, 300);
+      this.cb.onTool?.({ name: msg.name, ok: true, ms, detail });
       return send.success(content);
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e), 'rpc_error');
     }
   };
 
-  /** Run one full agent turn on a persistent session; resolve with its reply text. */
+  /** Run one full agent turn on a persistent session. When onSpeak is wired, the
+   *  reply is streamed to EVI sentence-by-sentence as it generates and resolves
+   *  with a sentinel; otherwise it resolves with the full text (spoken at the end). */
   private async askOpenclaw(request: string): Promise<string> {
     await this.ensureSession();
     const key = this.sessionKey!;
+    const onSpeak = this.cb.onSpeak;
     return new Promise<string>((resolve, reject) => {
       let runId: string | null = null;
       let text = '';
+      let spokenUpTo = 0;
       let settled = false;
       const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); off(); this.offAgent = null; fn(); };
+
+      // Speak any newly-completed sentences. On `final`, flush the trailing partial.
+      const speakNew = (final: boolean) => {
+        if (!onSpeak) return;
+        if (text.length < spokenUpTo) spokenUpTo = text.length; // agent rewrote/shrank — don't re-speak
+        const { sentences, consumed } = nextSentences(text, spokenUpTo);
+        for (const s of sentences) onSpeak(s);
+        spokenUpTo = consumed;
+        if (final) {
+          const tail = text.slice(spokenUpTo).trim();
+          if (tail) onSpeak(tail);
+          spokenUpTo = text.length;
+        }
+      };
 
       const off = this.client.on('agent', (payload) => {
         const p = payload as AgentEventFrame;
         if (p.sessionKey !== key || !runId || p.runId !== runId) return;
         if (p.stream === 'assistant' && typeof p.data?.text === 'string') {
           text = p.data.text;
+          speakNew(false);
         } else if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-          finish(() => resolve(text.trim() || 'The agent completed without a reply.'));
+          speakNew(true);
+          finish(() => resolve(onSpeak ? STREAMED_SENTINEL : (text.trim() || 'The agent completed without a reply.')));
         }
       });
       this.offAgent = off; // so dispose() can cancel a mid-flight ask
 
-      const timer = setTimeout(
-        () => finish(() => resolve(text.trim() || 'The request is taking too long; still working on it.')),
-        ASK_TIMEOUT_MS,
-      );
+      const timer = setTimeout(() => {
+        speakNew(true);
+        finish(() => resolve(onSpeak ? STREAMED_SENTINEL : (text.trim() || 'The request is taking too long; still working on it.')));
+      }, ASK_TIMEOUT_MS);
 
       this.client
-        .call<{ runId?: string }>('sessions.send', { key, message: request })
+        .call<{ runId?: string }>('sessions.send', { key, message: `${VOICE_DIRECTIVE}\n\n${request}` })
         .then((r) => { runId = r.runId ?? null; if (!runId) finish(() => reject(new Error('sessions.send returned no runId'))); })
         .catch((err) => finish(() => reject(err as Error)));
     });

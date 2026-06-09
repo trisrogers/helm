@@ -11,6 +11,10 @@ node_modules
 dist
 dist-ssr
 *.local
+.env.production
+
+# openclaw talk-relay patcher backups (written next to the patched bundle)
+*.pre-talk-patch
 
 # Editor directories and files
 .vscode/*

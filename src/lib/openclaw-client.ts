@@ -53,6 +53,7 @@ export class OpenClawClient {
   private eventHandlers = new Map<string, Set<EventHandler>>();
   private statusHandlers = new Set<StatusHandler>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private gone = false;
 
@@ -73,12 +74,26 @@ export class OpenClawClient {
     const ws = new WebSocket(GATEWAY_WS_URL);
     this.ws = ws;
 
+    // A half-open socket where the gateway never sends connect.challenge (or
+    // never answers it) would otherwise wedge us in 'connecting' forever with
+    // no reconnect. Closing the socket routes recovery through onclose.
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (this.ws === ws && this.status !== 'connected') {
+        console.warn('[helm-ws] connect timed out');
+        ws.close();
+      }
+    }, 15_000);
+
     ws.onopen = () => {
       console.log('[helm-ws] open');
     };
 
     ws.onmessage = (e: MessageEvent<string>) => {
-      console.log('[helm-ws] message:', e.data.slice(0, 200));
+      if (this.ws !== ws) return; // stale socket from a previous connect
+      // Note: prod is a dev-mode vite server (--mode prod), so DEV is true
+      // there — gate per-frame payload logging on MODE instead.
+      if (import.meta.env.MODE !== 'prod') console.log('[helm-ws] message:', e.data.slice(0, 200));
       let frame: Record<string, unknown>;
       try { frame = JSON.parse(e.data) as Record<string, unknown>; } catch { return; }
 
@@ -92,6 +107,7 @@ export class OpenClawClient {
             this.snapshot = hello.snapshot ?? null;
             this.serverVersion = hello.server?.version ?? null;
             this.reconnectDelay = 1000;
+            if (this.connectTimer) { clearTimeout(this.connectTimer); this.connectTimer = null; }
             this.setStatus('connected');
           },
           reject: (err) => {
@@ -149,8 +165,10 @@ export class OpenClawClient {
     };
 
     ws.onclose = (e) => {
+      if (this.ws !== ws) return; // stale socket from a previous connect
       console.log('[helm-ws] close code=' + e.code + ' reason=' + e.reason);
       this.ws = null;
+      if (this.connectTimer) { clearTimeout(this.connectTimer); this.connectTimer = null; }
       this.pending.forEach(({ reject }) => reject(new Error('Connection closed')));
       this.pending.clear();
       if (!this.gone && this.status !== 'auth_failed') {
@@ -159,7 +177,9 @@ export class OpenClawClient {
       }
     };
 
-    ws.onerror = (e) => { console.log('[helm-ws] error', e); this.setStatus('error'); };
+    // Status transitions are onclose's job (the browser always follows onerror
+    // with onclose); setting 'error' here just produced a status flicker.
+    ws.onerror = (e) => { console.log('[helm-ws] error', e); };
   }
 
   private scheduleReconnect() {
@@ -205,6 +225,10 @@ export class OpenClawClient {
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.connectTimer !== null) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
     }
     this.ws?.close();
     this.ws = null;

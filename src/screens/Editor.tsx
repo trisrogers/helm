@@ -145,14 +145,16 @@ export default function Editor() {
 
   useEffect(() => { refreshFiles(); }, [refreshFiles]);
 
-  /* fetch content when activeFile changes */
+  /* fetch content when the active file (or its existence) changes. Deliberately
+     NOT keyed on the whole `files` array: list refreshes/saves update metadata,
+     and refetching then would clobber a dirty editor buffer. */
+  const activeIsMissing = files?.find(f => f.name === activeFile)?.missing ?? false;
   useEffect(() => {
     if (!client || status !== 'connected' || !agentId || !activeFile) {
       setLoadedContent('');
       return;
     }
-    const target = files?.find(f => f.name === activeFile);
-    if (target?.missing) {
+    if (activeIsMissing) {
       setLoadedContent('');
       setDirty(false);
       dirtyRef.current = false;
@@ -177,7 +179,7 @@ export default function Editor() {
       }
     })();
     return () => { cancelled = true; };
-  }, [client, status, agentId, activeFile, files]);
+  }, [client, status, agentId, activeFile, activeIsMissing]);
 
   /* mount CodeMirror once */
   useEffect(() => {
@@ -248,7 +250,7 @@ export default function Editor() {
   }, [loadedContent, activeFile]);
 
   /* save */
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!client || !agentId || !activeFile || !viewRef.current) return;
     const content = viewRef.current.state.doc.toString();
     setSaving(true);
@@ -272,7 +274,7 @@ export default function Editor() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [client, agentId, activeFile]);
 
   const handleRevert = () => {
     const view = viewRef.current;
@@ -294,7 +296,7 @@ export default function Editor() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
+  }, [dirty, saving, handleSave]);
 
   /* context preview values */
   const contextSection = useMemo(() => {

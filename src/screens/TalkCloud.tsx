@@ -68,8 +68,17 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   const connected = status.value === 'connected';
   const busy = connecting || status.value === 'connecting';
 
+  // "Mic stays on" intent + reconnect bookkeeping. wantOn = the user tapped the
+  // mic and hasn't pressed End, so an inactivity/transport drop should silently
+  // reconnect rather than going dark. retries backs off; the timer is the pending
+  // reconnect. EVI doesn't greet on connect, so reconnects are seamless.
+  const wantOn = useRef(false);
+  const retries = useRef(0);
+  const reTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const start = useCallback(async () => {
     if (!configId || connected || status.value === 'connecting') return;
+    wantOn.current = true;
     setAuthError(null);
     setConnecting(true);
     try {
@@ -82,13 +91,34 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
     }
   }, [configId, connected, status.value, connect]);
 
+  // Explicit stop (End / mic toggle-off / unmount): clear intent + pending retry.
+  const stop = useCallback(() => {
+    wantOn.current = false;
+    if (reTimer.current) { clearTimeout(reTimer.current); reTimer.current = null; }
+    disconnect();
+  }, [disconnect]);
+
+  // Auto-reconnect: when EVI drops while the user still wants the mic on, retry
+  // with backoff (cap 6 attempts ≈ a couple minutes) instead of forcing a re-tap.
+  useEffect(() => {
+    if (status.value === 'connected') { retries.current = 0; return; }
+    if ((status.value === 'disconnected' || status.value === 'error')
+        && wantOn.current && reTimer.current == null) {
+      if (retries.current >= 6) { wantOn.current = false; return; }
+      const delay = Math.min(500 * 2 ** retries.current, 8000);
+      retries.current += 1;
+      reTimer.current = setTimeout(() => { reTimer.current = null; if (wantOn.current) start(); }, delay);
+    }
+  }, [status.value, start]);
+  useEffect(() => () => { if (reTimer.current) clearTimeout(reTimer.current); }, []);
+
   // Ensure the EVI socket is closed if this screen unmounts mid-call (e.g. nav
   // away, or the theme-keyed remount on a theme switch). Use a latest-ref so this
   // fires ONLY on unmount — depending on [disconnect] would re-run every render
   // (voice-react returns a fresh disconnect each time) and spin into a loop.
   const disconnectRef = useRef(disconnect);
   disconnectRef.current = disconnect;
-  useEffect(() => () => { disconnectRef.current().catch(() => {}); }, []);
+  useEffect(() => () => { wantOn.current = false; disconnectRef.current().catch(() => {}); }, []);
 
   const transcript = useMemo(
     () => messages.filter(
@@ -105,8 +135,9 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   const statusText = (() => {
     if (gw !== 'connected') return 'Gateway disconnected';
     if (!configId) return 'No EVI config for this theme';
-    if (busy) return 'Connecting…';
+    if (busy) return wantOn.current ? 'Reconnecting…' : 'Connecting…';
     if (connected) return isMuted ? 'Muted' : (level > 0.04 ? 'Listening…' : 'Live');
+    if (wantOn.current) return 'Reconnecting…';
     return 'Tap to begin';
   })();
 
@@ -181,15 +212,15 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
         <button
           className="mic-btn"
           style={{ transform: level > 0.05 ? 'scale(1.06)' : undefined, boxShadow: connected ? '0 0 24px var(--acc)' : undefined }}
-          disabled={gw !== 'connected' || !configId || busy}
-          onClick={() => (connected ? disconnect() : start())}
+          disabled={gw !== 'connected' || !configId || (busy && !wantOn.current)}
+          onClick={() => { if (connected || wantOn.current) { stop(); } else { retries.current = 0; start(); } }}
         >🎙</button>
 
         <button
           className="btn btn-ghost"
           style={{ padding: '10px 16px', color: 'var(--err)', borderColor: 'var(--err)' }}
-          disabled={!connected}
-          onClick={() => disconnect()}
+          disabled={!connected && !wantOn.current}
+          onClick={() => stop()}
         >End</button>
       </div>
     </div>

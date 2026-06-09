@@ -153,6 +153,14 @@ const main = async () => {
       voice: { provider: 'CUSTOM_VOICE', id: T.voiceId },
       language_model: { model_provider: 'ANTHROPIC', model_resource: MODEL, temperature: 0.7 },
       tools: toolIds,
+      // Keep the session alive through normal think-time. EVI's default inactivity
+      // timeout is 120s — too short when an ask_openclaw turn runs 30–75s and the
+      // user then pauses. 300s (range 30–1800) gives a comfortable 5 min before EVI
+      // ends the chat; the client also auto-reconnects, so a drop stays invisible.
+      timeouts: {
+        inactivity: { enabled: true, duration_secs: 300 },
+        max_duration: { enabled: true, duration_secs: 1800 },
+      },
     };
     // If the config ID is already known (passed via env), create a new VERSION of
     // it in place — stable ID, EVI uses the latest version, so no .env.local change

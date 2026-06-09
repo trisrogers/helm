@@ -97,36 +97,22 @@ const VOICE_DIRECTIVE =
   'brief, natural spoken sentences. No markdown, lists, headings, code blocks, ' +
   'asterisks, or emoji. Do not prefix your reply with a name or speaker label.]';
 
-// Returned as the tool result once the answer has already been streamed to EVI's
-// voice, so the supplemental LLM doesn't read the whole thing back a second time.
-const STREAMED_SENTINEL =
-  '[Delivered. The full answer has already been spoken to the user, verbatim, as it ' +
-  'streamed. Do NOT repeat, summarize, paraphrase, or read any of it back — reply ' +
-  'with nothing, or at most one short natural closing remark if clearly warranted.]';
-
-/** Split newly-arrived cumulative text into complete sentences from `from`.
- *  A sentence is complete only once trailing whitespace/newline follows its
- *  terminator, so we never speak a half-formed token mid-stream. */
-function nextSentences(text: string, from: number): { sentences: string[]; consumed: number } {
-  const sub = text.slice(from);
-  const boundary = /[.!?]+["')\]]*\s+|\n+/g;
-  const sentences: string[] = [];
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = boundary.exec(sub)) !== null) {
-    const end = m.index + m[0].length;
-    const chunk = sub.slice(last, end).trim();
-    if (chunk) sentences.push(chunk);
-    last = end;
-  }
-  return { sentences, consumed: from + last };
-}
+// Returned as the ask_openclaw tool result so EVI's supplemental LLM stays quiet
+// instead of reading the answer back. We voice the answer ourselves (one
+// sendAssistantInput) AFTER resolving the tool — see onToolCall.
+const SILENCE_SENTINEL =
+  '[Delivered out-of-band. The answer is being spoken to the user directly. Do NOT ' +
+  'repeat, summarize, paraphrase, or read any of it back — reply with nothing, or at ' +
+  'most one short natural closing remark if clearly warranted.]';
 
 export interface BridgeCallbacks {
   /** Each tool invocation, for the on-screen activity log. */
   onTool?: (entry: { name: string; ok: boolean; ms: number; detail: string }) => void;
-  /** When set, ask_openclaw streams the agent's reply here sentence-by-sentence
-   *  (wired to EVI's sendAssistantInput) instead of returning it all at once. */
+  /** When set, the ask_openclaw answer is voiced through here (wired to EVI's
+   *  sendAssistantInput) as a single utterance AFTER the tool call resolves, so
+   *  EVI is idle and actually synthesizes it. Streaming mid-turn doesn't work:
+   *  assistant_input sent while EVI's tool call is pending lands in the transcript
+   *  but its audio is dropped/clipped. */
   onSpeak?: (text: string) => void;
 }
 
@@ -160,79 +146,59 @@ export class OpenclawVoiceBridge {
     };
 
     try {
-      let content: string;
       if (msg.name === 'ask_openclaw') {
         const request = typeof args.request === 'string' ? args.request : '';
         if (!request) return fail('ask_openclaw called without a request', 'bad_args');
-        content = await this.askOpenclaw(request);
-      } else if (FAST_TOOLS[msg.name]) {
-        content = JSON.stringify(await this.client.call(FAST_TOOLS[msg.name]));
-      } else {
-        return fail(`no bridge for tool "${msg.name}"`, 'unknown_tool');
+        const answer = await this.askOpenclaw(request);
+        const ms = Math.round(performance.now() - started);
+        if (this.cb.onSpeak) {
+          // Resolve the tool FIRST (sentinel → EVI stays quiet), THEN voice the
+          // whole answer as one utterance into the now-idle session. Voicing
+          // before the tool resolves (mid-turn streaming) gets the audio dropped.
+          this.cb.onTool?.({ name: msg.name, ok: true, ms, detail: 'voiced after resolve' });
+          const res = send.success(SILENCE_SENTINEL);
+          this.cb.onSpeak(answer);
+          return res;
+        }
+        this.cb.onTool?.({ name: msg.name, ok: true, ms, detail: answer.slice(0, 300) });
+        return send.success(answer);
       }
-      const ms = Math.round(performance.now() - started);
-      const detail = content === STREAMED_SENTINEL ? 'spoken live (streamed)' : content.slice(0, 300);
-      this.cb.onTool?.({ name: msg.name, ok: true, ms, detail });
-      return send.success(content);
+      if (FAST_TOOLS[msg.name]) {
+        const content = JSON.stringify(await this.client.call(FAST_TOOLS[msg.name]));
+        this.cb.onTool?.({ name: msg.name, ok: true, ms: Math.round(performance.now() - started), detail: content.slice(0, 300) });
+        return send.success(content);
+      }
+      return fail(`no bridge for tool "${msg.name}"`, 'unknown_tool');
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e), 'rpc_error');
     }
   };
 
-  /** Run one full agent turn on a persistent session. When onSpeak is wired, the
-   *  reply is streamed to EVI sentence-by-sentence as it generates and resolves
-   *  with a sentinel; otherwise it resolves with the full text (spoken at the end). */
+  /** Run one full agent turn on a persistent session and resolve with the agent's
+   *  final reply text. The caller voices it (see onToolCall) after resolving the
+   *  EVI tool call — mid-turn streaming into a pending tool call gets audio-dropped. */
   private async askOpenclaw(request: string): Promise<string> {
     await this.ensureSession();
     const key = this.sessionKey!;
-    const onSpeak = this.cb.onSpeak;
     return new Promise<string>((resolve, reject) => {
       let runId: string | null = null;
       let text = '';
-      let spokenUpTo = 0;
-      let pending = '';     // complete sentences awaiting a big-enough chunk to speak
       let settled = false;
       const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); off(); this.offAgent = null; fn(); };
-
-      // Hand EVI reasonably-sized chunks rather than one tiny sendAssistantInput per
-      // sentence: rapid-fire fragments make EVI clip mid-utterance (it starts one,
-      // then the next input cuts it off). Coalesce complete sentences until they
-      // reach MIN_SPEAK chars, then emit. On `final`, flush whatever's left —
-      // pending sentences plus any trailing partial — so the tail always completes.
-      const MIN_SPEAK = 120;
-      const speakNew = (final: boolean) => {
-        if (!onSpeak) return;
-        if (text.length < spokenUpTo) spokenUpTo = text.length; // agent rewrote/shrank — don't re-speak
-        const { sentences, consumed } = nextSentences(text, spokenUpTo);
-        spokenUpTo = consumed;
-        for (const s of sentences) {
-          pending = pending ? `${pending} ${s}` : s;
-          if (pending.length >= MIN_SPEAK) { onSpeak(pending); pending = ''; }
-        }
-        if (final) {
-          const tail = text.slice(spokenUpTo).trim();
-          if (tail) pending = pending ? `${pending} ${tail}` : tail;
-          spokenUpTo = text.length;
-          if (pending) { onSpeak(pending); pending = ''; }
-        }
-      };
 
       const off = this.client.on('agent', (payload) => {
         const p = payload as AgentEventFrame;
         if (p.sessionKey !== key || !runId || p.runId !== runId) return;
         if (p.stream === 'assistant' && typeof p.data?.text === 'string') {
           text = p.data.text;
-          speakNew(false);
         } else if (p.stream === 'lifecycle' && p.data?.phase === 'end') {
-          speakNew(true);
-          finish(() => resolve(onSpeak ? STREAMED_SENTINEL : (text.trim() || 'The agent completed without a reply.')));
+          finish(() => resolve(text.trim() || 'The agent completed without a reply.'));
         }
       });
       this.offAgent = off; // so dispose() can cancel a mid-flight ask
 
       const timer = setTimeout(() => {
-        speakNew(true);
-        finish(() => resolve(onSpeak ? STREAMED_SENTINEL : (text.trim() || 'The request is taking too long; still working on it.')));
+        finish(() => resolve(text.trim() || 'The request is taking too long; still working on it.'));
       }, ASK_TIMEOUT_MS);
 
       this.client

@@ -14,7 +14,10 @@
 
 [Unit]
 Description=Helm — OpenClaw control UI (prod, tailnet :5174)
-After=network.target
+After=network.target openclaw-voice-sidecar.service
+# Talk's /hume/token proxy targets the sidecar; start it with us so a reboot
+# doesn't leave Talk minting 503s while the sidecar cold-loads.
+Wants=openclaw-voice-sidecar.service
 
 [Service]
 Type=simple

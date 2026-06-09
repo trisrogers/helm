@@ -82,7 +82,13 @@ const FAST_TOOLS: Record<string, string> = {
   get_usage: 'usage.status',
 };
 
-const ASK_TIMEOUT_MS = 60_000;
+// Ceiling on a single agent turn before we give up listening. Generous, because
+// ask_openclaw can do a lot of tool work before its first token (first assistant
+// text routinely lands 60s+ after send) and EVI voices the reply via
+// sendAssistantInput while its tool call stays pending. A too-tight cap (was 60s)
+// previously fired before the agent's first token, tore the stream listener down,
+// and returned the "already spoken" sentinel — so the real reply was never voiced.
+const ASK_TIMEOUT_MS = 180_000;
 
 // Prepended to every ask_openclaw turn so the agent replies in spoken-friendly
 // prose (its text is synthesized verbatim, so markdown/lists read badly aloud).

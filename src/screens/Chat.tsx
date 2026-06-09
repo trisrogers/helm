@@ -458,6 +458,20 @@ export default function Chat({ theme: _theme }: ChatProps) {
     }
 
     (async () => {
+      // Subscribe BEFORE loading history: the subscription response carries the
+      // session's canonical key, which the event filters below need in
+      // acceptedKeysRef. Subscribing after history meant streaming events for a
+      // mid-run session were dropped until the (slower) history call finished.
+      try {
+        const sub = await client.call<{ subscribed: boolean; key?: string }>(
+          'sessions.messages.subscribe',
+          { key: activeKey },
+        );
+        if (!cancelled && sub.key) acceptedKeysRef.current.add(sub.key);
+      } catch (e) {
+        console.warn('[chat] subscribe failed', e);
+      }
+
       try {
         // Use chat.history rather than sessions.get — sessions.get only reads
         // the local transcript file, which is empty/header-only for dashboard
@@ -470,21 +484,16 @@ export default function Chat({ theme: _theme }: ChatProps) {
         const msgs = raw
           .map(m => projectMsg(m, activeKey))
           .filter((m): m is DisplayMsg => m !== null);
-        setMessages(msgs);
+        // Keep any bubble that started streaming while history was in flight —
+        // wholesale replacement would blank it until the next delta arrives.
+        setMessages(prev => {
+          const streaming = prev.filter(m => m.streaming && !msgs.some(h => h.id === m.id));
+          return streaming.length ? [...msgs, ...streaming] : msgs;
+        });
       } catch (e) {
         console.warn('[chat] chat.history failed', e);
       } finally {
         if (!cancelled) setLoadingMsgs(false);
-      }
-
-      try {
-        const sub = await client.call<{ subscribed: boolean; key?: string }>(
-          'sessions.messages.subscribe',
-          { key: activeKey },
-        );
-        if (!cancelled && sub.key) acceptedKeysRef.current.add(sub.key);
-      } catch (e) {
-        console.warn('[chat] subscribe failed', e);
       }
     })();
 
@@ -1113,8 +1122,8 @@ export default function Chat({ theme: _theme }: ChatProps) {
             </div>
           )}
           {(() => { void pinnedTick; return null; })()}
-          {visibleMessages.map((m, idx) => {
-            const isPinned = pinnedRef.current?.has(idx) ?? false;
+          {visibleMessages.map((m) => {
+            const isPinned = pinnedRef.current?.has(m.id) ?? false;
             const isTool = m.role === 'tool' || m.role === 'system';
             const avatarLabel = m.role === 'user' ? 'U' : isTool ? '🔧' : 'D';
             return (
@@ -1152,7 +1161,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
                       <button
                         className="msg-pin"
                         onClick={() => {
-                          pinnedRef.current?.toggle(idx);
+                          pinnedRef.current?.toggle(m.id);
                           setPinnedTick(t => t + 1);
                         }}
                         title={isPinned ? 'Unpin' : 'Pin this message'}

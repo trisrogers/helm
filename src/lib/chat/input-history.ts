@@ -117,11 +117,6 @@ export function resetChatInputHistoryNavigation(state: ChatInputHistoryState) {
   state.chatDraftBeforeHistory = null;
 }
 
-export function handleChatDraftChange(state: ChatInputHistoryState, next: string) {
-  state.chatMessage = next;
-  resetChatInputHistoryNavigation(state);
-}
-
 function hasStaleActiveHistorySelection(state: ChatInputHistoryState): boolean {
   if (state.chatInputHistoryIndex === -1) {
     return false;

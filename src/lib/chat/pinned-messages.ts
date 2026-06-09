@@ -2,43 +2,50 @@ import { getSafeLocalStorage } from './local-storage';
 
 const PREFIX = 'openclaw:pinned:';
 
+/**
+ * Per-session pinned messages, keyed by stable message id. Earlier versions
+ * stored indices into the *filtered* visible list, which silently migrated
+ * pins onto the wrong messages whenever streaming inserted rows or the
+ * tool-visibility filter changed. Persisted numeric (index) data from those
+ * versions is discarded on load.
+ */
 export class PinnedMessages {
   private key: string;
-  private pinnedIndices = new Set<number>();
+  private pinnedIds = new Set<string>();
 
   constructor(sessionKey: string) {
     this.key = PREFIX + sessionKey;
     this.load();
   }
 
-  get indices(): Set<number> {
-    return this.pinnedIndices;
+  get ids(): Set<string> {
+    return this.pinnedIds;
   }
 
-  has(index: number): boolean {
-    return this.pinnedIndices.has(index);
+  has(id: string): boolean {
+    return this.pinnedIds.has(id);
   }
 
-  pin(index: number): void {
-    this.pinnedIndices.add(index);
+  pin(id: string): void {
+    this.pinnedIds.add(id);
     this.save();
   }
 
-  unpin(index: number): void {
-    this.pinnedIndices.delete(index);
+  unpin(id: string): void {
+    this.pinnedIds.delete(id);
     this.save();
   }
 
-  toggle(index: number): void {
-    if (this.pinnedIndices.has(index)) {
-      this.unpin(index);
+  toggle(id: string): void {
+    if (this.pinnedIds.has(id)) {
+      this.unpin(id);
     } else {
-      this.pin(index);
+      this.pin(id);
     }
   }
 
   clear(): void {
-    this.pinnedIndices.clear();
+    this.pinnedIds.clear();
     this.save();
   }
 
@@ -50,7 +57,7 @@ export class PinnedMessages {
       }
       const arr = JSON.parse(raw);
       if (Array.isArray(arr)) {
-        this.pinnedIndices = new Set(arr.filter((n) => typeof n === 'number'));
+        this.pinnedIds = new Set(arr.filter((v) => typeof v === 'string'));
       }
     } catch {
       // ignore
@@ -59,7 +66,7 @@ export class PinnedMessages {
 
   private save(): void {
     try {
-      getSafeLocalStorage()?.setItem(this.key, JSON.stringify([...this.pinnedIndices]));
+      getSafeLocalStorage()?.setItem(this.key, JSON.stringify([...this.pinnedIds]));
     } catch {
       // ignore
     }

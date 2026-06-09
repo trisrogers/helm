@@ -24,7 +24,9 @@ export function buildChatMarkdown(messages: unknown[], assistantName: string): s
     const m = msg as Record<string, unknown>;
     const role = m.role === 'user' ? 'You' : m.role === 'assistant' ? assistantName : 'Tool';
     const content = extractTextCached(msg) ?? '';
-    const ts = typeof m.timestamp === 'number' ? new Date(m.timestamp).toISOString() : '';
+    // DisplayMsg stores its timestamp as `ts`; raw upstream messages use `timestamp`.
+    const tsValue = typeof m.timestamp === 'number' ? m.timestamp : typeof m.ts === 'number' ? m.ts : null;
+    const ts = tsValue !== null ? new Date(tsValue).toISOString() : '';
     lines.push(`## ${role}${ts ? ` (${ts})` : ''}`, '', content, '');
   }
   return lines.join('\n');

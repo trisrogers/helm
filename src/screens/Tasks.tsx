@@ -9,6 +9,7 @@ import {
   loadGoals,
   createTask, updateTask, deleteTask,
   loadCommentary, addCommentary, commentaryFor,
+  onStoreChange,
 } from '../lib/helm-store';
 import { TaskBoard, TaskDetailModal } from '../components/TaskBoard';
 
@@ -60,11 +61,16 @@ export default function Tasks({ theme }: Props) {
   const [agentFilter, setAgentFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string>('all');
 
-  // Reload from storage on mount (in case other screens mutated it)
+  // Reload from storage on mount and whenever another screen mutates the store
+  // (helm-store fires onStoreChange for same-tab writes and storage events).
   useEffect(() => {
-    setTasks(loadTasks());
-    setGoals(loadGoals());
-    setCommentary(loadCommentary());
+    const reload = () => {
+      setTasks(loadTasks());
+      setGoals(loadGoals());
+      setCommentary(loadCommentary());
+    };
+    reload();
+    return onStoreChange(reload);
   }, []);
 
   const agents = useMemo(() => {

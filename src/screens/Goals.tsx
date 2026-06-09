@@ -12,6 +12,7 @@ import {
   createTask, updateTask, deleteTask,
   loadCommentary, addCommentary, commentaryFor,
   goalProgress, tasksForGoal,
+  onStoreChange,
 } from '../lib/helm-store';
 import { TaskBoard, TaskDetailModal } from '../components/TaskBoard';
 
@@ -161,10 +162,18 @@ export default function Goals({ theme }: Props) {
   const [narrativeDraft, setNarrativeDraft] = useState('');
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
+  // Reload from storage on mount and whenever another screen mutates the store.
+  // Also re-anchor the selection if the active goal was deleted elsewhere.
   useEffect(() => {
-    setGoals(loadGoals());
-    setTasks(loadTasks());
-    setCommentary(loadCommentary());
+    const reload = () => {
+      const gs = loadGoals();
+      setGoals(gs);
+      setTasks(loadTasks());
+      setCommentary(loadCommentary());
+      setActiveId(prev => (prev && gs.some(g => g.id === prev)) ? prev : gs[0]?.id ?? null);
+    };
+    reload();
+    return onStoreChange(reload);
   }, []);
 
   const active = useMemo(

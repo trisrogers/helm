@@ -123,7 +123,9 @@ export interface BridgeCallbacks {
  */
 export class OpenclawVoiceBridge {
   private sessionKey: string | null = null;
-  private offAgent: (() => void) | null = null;
+  // One unsubscribe per in-flight ask_openclaw — EVI can chain tool calls, so a
+  // single slot would get stomped by a concurrent ask and leak its listener.
+  private readonly offAgents = new Set<() => void>();
   private readonly client: OpenClawClient;
   private readonly agentId: string;
   private readonly cb: BridgeCallbacks;
@@ -184,7 +186,7 @@ export class OpenclawVoiceBridge {
       let runId: string | null = null;
       let text = '';
       let settled = false;
-      const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); off(); this.offAgent = null; fn(); };
+      const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); off(); this.offAgents.delete(off); fn(); };
 
       const off = this.client.on('agent', (payload) => {
         const p = payload as AgentEventFrame;
@@ -195,7 +197,7 @@ export class OpenclawVoiceBridge {
           finish(() => resolve(text.trim() || 'The agent completed without a reply.'));
         }
       });
-      this.offAgent = off; // so dispose() can cancel a mid-flight ask
+      this.offAgents.add(off); // so dispose() can cancel a mid-flight ask
 
       const timer = setTimeout(() => {
         finish(() => resolve(text.trim() || 'The request is taking too long; still working on it.'));
@@ -220,7 +222,7 @@ export class OpenclawVoiceBridge {
   }
 
   dispose(): void {
-    this.offAgent?.();
-    this.offAgent = null;
+    for (const off of this.offAgents) off();
+    this.offAgents.clear();
   }
 }

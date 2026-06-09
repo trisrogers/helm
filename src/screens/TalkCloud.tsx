@@ -70,15 +70,21 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
 
   // "Mic stays on" intent + reconnect bookkeeping. wantOn = the user tapped the
   // mic and hasn't pressed End, so an inactivity/transport drop should silently
-  // reconnect rather than going dark. retries backs off; the timer is the pending
-  // reconnect. EVI doesn't greet on connect, so reconnects are seamless.
-  const wantOn = useRef(false);
+  // reconnect rather than going dark. State (not a ref) because the status text
+  // and buttons render from it; wantOnRef mirrors it for timer callbacks and the
+  // unmount path. retries backs off; the timer is the pending reconnect. EVI
+  // doesn't greet on connect, so reconnects are seamless.
+  const [wantOn, setWantOn] = useState(false);
+  const wantOnRef = useRef(wantOn);
+  wantOnRef.current = wantOn;
+  const [gaveUp, setGaveUp] = useState(false);
   const retries = useRef(0);
   const reTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const start = useCallback(async () => {
     if (!configId || connected || status.value === 'connecting') return;
-    wantOn.current = true;
+    setWantOn(true);
+    setGaveUp(false);
     setAuthError(null);
     setConnecting(true);
     try {
@@ -90,10 +96,15 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
       setConnecting(false);
     }
   }, [configId, connected, status.value, connect]);
+  // Latest-ref so the reconnect timer always calls the current start without the
+  // reconnect effect depending on start's identity (which changes every status
+  // transition because voice-react's connect does).
+  const startRef = useRef(start);
+  startRef.current = start;
 
   // Explicit stop (End / mic toggle-off / unmount): clear intent + pending retry.
   const stop = useCallback(() => {
-    wantOn.current = false;
+    setWantOn(false);
     if (reTimer.current) { clearTimeout(reTimer.current); reTimer.current = null; }
     disconnect();
   }, [disconnect]);
@@ -103,13 +114,13 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   useEffect(() => {
     if (status.value === 'connected') { retries.current = 0; return; }
     if ((status.value === 'disconnected' || status.value === 'error')
-        && wantOn.current && reTimer.current == null) {
-      if (retries.current >= 6) { wantOn.current = false; return; }
+        && wantOn && reTimer.current == null) {
+      if (retries.current >= 6) { setWantOn(false); setGaveUp(true); return; }
       const delay = Math.min(500 * 2 ** retries.current, 8000);
       retries.current += 1;
-      reTimer.current = setTimeout(() => { reTimer.current = null; if (wantOn.current) start(); }, delay);
+      reTimer.current = setTimeout(() => { reTimer.current = null; if (wantOnRef.current) startRef.current(); }, delay);
     }
-  }, [status.value, start]);
+  }, [status.value, wantOn]);
   useEffect(() => () => { if (reTimer.current) clearTimeout(reTimer.current); }, []);
 
   // Ensure the EVI socket is closed if this screen unmounts mid-call (e.g. nav
@@ -118,7 +129,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   // (voice-react returns a fresh disconnect each time) and spin into a loop.
   const disconnectRef = useRef(disconnect);
   disconnectRef.current = disconnect;
-  useEffect(() => () => { wantOn.current = false; disconnectRef.current().catch(() => {}); }, []);
+  useEffect(() => () => { wantOnRef.current = false; disconnectRef.current().catch(() => {}); }, []);
 
   const transcript = useMemo(
     () => messages.filter(
@@ -135,9 +146,10 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   const statusText = (() => {
     if (gw !== 'connected') return 'Gateway disconnected';
     if (!configId) return 'No EVI config for this theme';
-    if (busy) return wantOn.current ? 'Reconnecting…' : 'Connecting…';
+    if (busy) return wantOn ? 'Reconnecting…' : 'Connecting…';
     if (connected) return isMuted ? 'Muted' : (level > 0.04 ? 'Listening…' : 'Live');
-    if (wantOn.current) return 'Reconnecting…';
+    if (wantOn) return 'Reconnecting…';
+    if (gaveUp) return 'Reconnect failed — tap the mic to retry';
     return 'Tap to begin';
   })();
 
@@ -212,14 +224,14 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
         <button
           className="mic-btn"
           style={{ transform: level > 0.05 ? 'scale(1.06)' : undefined, boxShadow: connected ? '0 0 24px var(--acc)' : undefined }}
-          disabled={gw !== 'connected' || !configId || (busy && !wantOn.current)}
-          onClick={() => { if (connected || wantOn.current) { stop(); } else { retries.current = 0; start(); } }}
+          disabled={gw !== 'connected' || !configId || (busy && !wantOn)}
+          onClick={() => { if (connected || wantOn) { stop(); } else { retries.current = 0; start(); } }}
         >🎙</button>
 
         <button
           className="btn btn-ghost"
           style={{ padding: '10px 16px', color: 'var(--err)', borderColor: 'var(--err)' }}
-          disabled={!connected && !wantOn.current}
+          disabled={!connected && !wantOn}
           onClick={() => stop()}
         >End</button>
       </div>

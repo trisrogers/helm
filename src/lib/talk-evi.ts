@@ -184,20 +184,30 @@ export class OpenclawVoiceBridge {
       let runId: string | null = null;
       let text = '';
       let spokenUpTo = 0;
+      let pending = '';     // complete sentences awaiting a big-enough chunk to speak
       let settled = false;
       const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); off(); this.offAgent = null; fn(); };
 
-      // Speak any newly-completed sentences. On `final`, flush the trailing partial.
+      // Hand EVI reasonably-sized chunks rather than one tiny sendAssistantInput per
+      // sentence: rapid-fire fragments make EVI clip mid-utterance (it starts one,
+      // then the next input cuts it off). Coalesce complete sentences until they
+      // reach MIN_SPEAK chars, then emit. On `final`, flush whatever's left —
+      // pending sentences plus any trailing partial — so the tail always completes.
+      const MIN_SPEAK = 120;
       const speakNew = (final: boolean) => {
         if (!onSpeak) return;
         if (text.length < spokenUpTo) spokenUpTo = text.length; // agent rewrote/shrank — don't re-speak
         const { sentences, consumed } = nextSentences(text, spokenUpTo);
-        for (const s of sentences) onSpeak(s);
         spokenUpTo = consumed;
+        for (const s of sentences) {
+          pending = pending ? `${pending} ${s}` : s;
+          if (pending.length >= MIN_SPEAK) { onSpeak(pending); pending = ''; }
+        }
         if (final) {
           const tail = text.slice(spokenUpTo).trim();
-          if (tail) onSpeak(tail);
+          if (tail) pending = pending ? `${pending} ${tail}` : tail;
           spokenUpTo = text.length;
+          if (pending) { onSpeak(pending); pending = ''; }
         }
       };
 

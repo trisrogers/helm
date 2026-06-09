@@ -67,6 +67,19 @@ if (!found) {
   process.exit(1);
 }
 if (found.patched) {
+  // "Patched" was detected from the function name alone — verify the other two
+  // replacements too. An openclaw update could regress the call site / response
+  // while leaving the function, and a half-patched bundle breaks Talk silently.
+  const fully =
+    found.text.includes(CALL_SITE_PATCHED) && found.text.includes(RESPONSE_PATCHED);
+  if (!fully) {
+    console.error(
+      `[talk-patch] HALF-patched bundle: ${path.basename(found.p)} has resolveRelayInputAudioConfig ` +
+        "but the call-site/response replacements are missing. Restore the .pre-talk-patch " +
+        "backup (or reinstall openclaw) and re-run.",
+    );
+    process.exit(1);
+  }
   console.log(`[talk-patch] already patched: ${path.basename(found.p)} — nothing to do`);
   process.exit(0);
 }

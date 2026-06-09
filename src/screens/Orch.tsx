@@ -275,8 +275,11 @@ export default function Orch() {
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
-  const activityRef = useRef<ActivityEvent[]>([]);
-  activityRef.current = activity;
+  // Latest sessions for the event callback, so the subscription effect doesn't
+  // depend on `sessions` (which would tear down/re-register the listener on
+  // every event and leave the callback reading a stale snapshot).
+  const sessionsRef = useRef<SessionRow[]>([]);
+  sessionsRef.current = sessions;
 
   const refresh = useCallback(async () => {
     if (!client || status !== 'connected') return;
@@ -299,9 +302,7 @@ export default function Orch() {
       const p = payload as { sessionKey?: string; phase?: string; ts?: number };
       if (!p?.sessionKey) return;
       const ts = p.ts ?? Date.now();
-      const sess = activityRef.current; // not used; pattern stays parallel for clarity
-      void sess;
-      const sessRow = sessions.find(x => x.key === p.sessionKey);
+      const sessRow = sessionsRef.current.find(x => x.key === p.sessionKey);
       const agentId = sessRow ? sessionAgentId(sessRow) : undefined;
       const ev: ActivityEvent = { ts, sessionKey: p.sessionKey, agentId, phase: p.phase };
       setActivity(prev => [...prev.slice(-(ACTIVITY_BUFFER_MAX - 1)), ev]);
@@ -313,7 +314,7 @@ export default function Orch() {
     const interval = setInterval(() => setActivity(prev => prev.slice()), 30_000);
 
     return () => { off(); clearInterval(interval); };
-  }, [client, status, refresh, sessions]);
+  }, [client, status, refresh]);
 
   // Seed: also infer activity from initial sessions list (one event per recent session)
   useEffect(() => {

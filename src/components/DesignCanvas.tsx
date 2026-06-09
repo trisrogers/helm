@@ -244,13 +244,25 @@ export default function DesignCanvas({ storageId, seedHTML, seedLabel, onClose, 
   }, [content, autoPreview]);
 
   // persist whole canvas state (content + versions + activeId), debounced so
-  // every keystroke doesn't hit localStorage.
+  // every keystroke doesn't hit localStorage. persistRef holds the latest
+  // snapshot so pending edits flush (rather than drop) on unmount or when the
+  // canvas switches storageId mid-debounce.
+  const persistRef = useRef({ storageId, content, versions, activeId });
   useEffect(() => {
+    if (persistRef.current.storageId !== storageId) {
+      const p = persistRef.current;
+      saveCanvasState(p.storageId, { content: p.content, versions: p.versions, activeId: p.activeId });
+    }
+    persistRef.current = { storageId, content, versions, activeId };
     const id = setTimeout(() => {
       saveCanvasState(storageId, { content, versions, activeId });
     }, 400);
     return () => clearTimeout(id);
   }, [storageId, content, versions, activeId]);
+  useEffect(() => () => {
+    const p = persistRef.current;
+    saveCanvasState(p.storageId, { content: p.content, versions: p.versions, activeId: p.activeId });
+  }, []);
 
   // One-time legacy import offer: if this canvas has never been migrated and
   // has no versions of its own, surface the old global versions for import.

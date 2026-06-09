@@ -127,10 +127,16 @@ async function ensureTool(t) {
     return (await api('/tools', t)).id;
   } catch (e) {
     if (e.status !== 409) throw e;
-    const list = await api('/tools?page_number=0&page_size=100', null, 'GET');
-    const match = (list.tools_page || list.tools || []).find((x) => x.name === t.name);
-    if (!match) throw new Error(`409 on ${t.name} but not found in tool list`);
-    return match.id;
+    // Paginate the lookup — a single first-page fetch misses the match on
+    // accounts with >100 tools and aborts the whole setup.
+    for (let page = 0; ; page++) {
+      const list = await api(`/tools?page_number=${page}&page_size=100`, null, 'GET');
+      const tools = list.tools_page || list.tools || [];
+      const match = tools.find((x) => x.name === t.name);
+      if (match) return match.id;
+      if (tools.length < 100) break;
+    }
+    throw new Error(`409 on ${t.name} but not found in tool list`);
   }
 }
 

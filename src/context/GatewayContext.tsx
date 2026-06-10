@@ -2,6 +2,8 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -31,10 +33,27 @@ const GatewayContext = createContext<GatewayContextValue>({
 
 export function GatewayProvider({ children }: { children: ReactNode }) {
   const [token, setTokenState] = useState(() => OpenClawClient.getStoredToken());
-  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
-  const [client, setClient] = useState<OpenClawClient | null>(null);
-  const [snapshot, setSnapshot] = useState<GatewaySnapshot | null>(null);
-  const [serverVersion, setServerVersion] = useState<string | null>(null);
+  // One client per token, created at render time. The effect below owns its
+  // connection lifecycle (connect/subscribe/destroy); status/snapshot/version
+  // are seeded from the client and refreshed by the subscription callback.
+  // CONSTRAINT: destroy() is permanent, so this assumes the effect runs once
+  // per client. A StrictMode setup/cleanup/setup with the same memoized client
+  // would reconnect a dead client and stick at 'disconnected'. StrictMode is
+  // deliberately off (see main.tsx, voice-react); revisit if that changes.
+  const client = useMemo(() => (token ? new OpenClawClient(token) : null), [token]);
+  const [status, setStatus] = useState<ConnectionStatus>(client?.status ?? 'disconnected');
+  const [snapshot, setSnapshot] = useState<GatewaySnapshot | null>(client?.snapshot ?? null);
+  const [serverVersion, setServerVersion] = useState<string | null>(client?.serverVersion ?? null);
+
+  // Reset the derived state during render when the client changes (token swap or
+  // sign-out), the React-endorsed alternative to resetting it inside an effect.
+  const prevClient = useRef(client);
+  if (prevClient.current !== client) {
+    prevClient.current = client;
+    setStatus(client?.status ?? 'disconnected');
+    setSnapshot(client?.snapshot ?? null);
+    setServerVersion(client?.serverVersion ?? null);
+  }
 
   const setToken = (t: string) => {
     OpenClawClient.setStoredToken(t);
@@ -42,33 +61,23 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    if (!token) {
-      setStatus('disconnected');
-      setClient(null);
-      setSnapshot(null);
-      setServerVersion(null);
-      return;
-    }
+    if (!client) return;
 
-    const c = new OpenClawClient(token);
-    setClient(c);
-
-    const unsub = c.onStatus((s) => {
+    const unsub = client.onStatus((s) => {
       setStatus(s);
       if (s === 'connected') {
-        setSnapshot(c.snapshot);
-        setServerVersion(c.serverVersion);
+        setSnapshot(client.snapshot);
+        setServerVersion(client.serverVersion);
       }
     });
 
-    c.connect();
+    client.connect();
 
     return () => {
       unsub();
-      c.destroy();
-      setClient(null);
+      client.destroy();
     };
-  }, [token]);
+  }, [client]);
 
   return (
     <GatewayContext.Provider value={{ client, status, snapshot, serverVersion, token, setToken }}>
@@ -77,6 +86,9 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// Co-located with the provider on purpose; splitting it out would churn ~8
+// screen imports for a Fast-Refresh-only lint with no runtime benefit.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useGateway() {
   return useContext(GatewayContext);
 }

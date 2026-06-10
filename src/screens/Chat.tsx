@@ -123,7 +123,6 @@ function extractText(content: unknown): string {
       if (block && typeof block === 'object') {
         const b = block as Record<string, unknown>;
         if (typeof b.text === 'string') parts.push(b.text);
-        else if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
       }
     }
     return parts.join('');
@@ -344,8 +343,11 @@ export default function Chat({ theme: _theme }: ChatProps) {
   const [sessionsDefaults, setSessionsDefaults] = useState<SessionsDefaults | null>(null);
   /** Same idea, for thinking level. `null` = explicit clear, missing = inherit. */
   const [thinkingOverrides, setThinkingOverrides] = useState<Record<string, string | null>>({});
-  const [pinnedTick, setPinnedTick] = useState(0);
-  const pinnedRef = useRef<PinnedMessages | null>(null);
+  // Pinned message ids for the active session. PinnedMessages remains the
+  // persistence layer; this state mirrors its id set so render reads React
+  // state rather than a ref. Reloaded when the instance changes (session
+  // switch) and updated on toggle.
+  const [pinnedIds, setPinnedIds] = useState<ReadonlySet<string>>(() => new Set());
   const inputHistoryStateRef = useRef<ChatInputHistoryState>({
     sessionKey: '',
     chatLoading: false,
@@ -420,11 +422,14 @@ export default function Chat({ theme: _theme }: ChatProps) {
     } catch (e) {
       console.warn('[chat] sessions.list failed', e);
     }
-  }, [client, status]);
+  }, [client, status, setActiveKey]);
 
   useEffect(() => {
     if (!client || status !== 'connected') return;
-    refreshSessions();
+    // Kick the initial refresh off a microtask so its (post-await) setStates
+    // don't land synchronously in the effect body. Matches the promise-chained
+    // agents/models fetches below.
+    void Promise.resolve().then(() => refreshSessions());
     client.call<{ agents: AgentRow[] }>('agents.list').then(r => setAgents(r.agents ?? [])).catch(() => {});
     // Model catalog rarely changes — pull once per connect.
     client.call<{ models?: ModelCatalogEntry[] }>('models.list')
@@ -444,12 +449,16 @@ export default function Chat({ theme: _theme }: ChatProps) {
     finalizedRunsRef.current = new Set();
 
     // Render any cached history immediately so switching sessions feels
-    // instant. The background refresh below keeps the thread current.
+    // instant. The background refresh below keeps the thread current. This
+    // synchronous seed is part of the per-session subscription lifecycle — it
+    // must reset alongside acceptedKeysRef/finalizedRunsRef above, before the
+    // subscribe call below, so it can't move out of this effect.
     const cached = getCachedHistory<RawMessage>(activeKey);
     if (cached) {
       const projected = cached
         .map(m => projectMsg(m, activeKey))
         .filter((m): m is DisplayMsg => m !== null);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- subscription seed; see comment above
       setMessages(projected);
       setLoadingMsgs(false);
     } else {
@@ -608,16 +617,18 @@ export default function Chat({ theme: _theme }: ChatProps) {
     el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  // Per-session PinnedMessages instance — recreate when activeKey changes so
-  // pinned indices match the messages currently in the thread.
-  useEffect(() => {
-    if (!activeKey) {
-      pinnedRef.current = null;
-      return;
-    }
-    pinnedRef.current = new PinnedMessages(activeKey);
-    setPinnedTick(t => t + 1);
-  }, [activeKey]);
+  // Reload the pinned ids for the active session. Done during render
+  // (reset-on-dep-change) so a session switch seeds the pinned state in the
+  // same pass, with no one-frame flash of the previous session's pins. The
+  // PinnedMessages instance is constructed lazily in the toggle handler — it's
+  // only the persistence layer, so we don't hold it across renders.
+  // Initial `false` sentinel forces the seed on first render too — initializing
+  // to activeKey would skip it and leave the initial session's pins unloaded.
+  const [pinnedForKey, setPinnedForKey] = useState<string | null | false>(false);
+  if (pinnedForKey !== activeKey) {
+    setPinnedForKey(activeKey);
+    setPinnedIds(activeKey ? new Set(new PinnedMessages(activeKey).ids) : new Set());
+  }
 
   // Auto-focus composer when switching to / creating a session — saves a click
   // before the user can start typing.
@@ -628,7 +639,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
 
   // Mirror the React state the input-history module reads through. It mutates
   // its argument in place, so we keep a single ref instead of bouncing through
-  // setState — pinnedTick re-runs the read paths.
+  // setState; the key handlers read the ref's latest values on demand.
   useEffect(() => {
     inputHistoryStateRef.current.sessionKey = activeKey ?? '';
     inputHistoryStateRef.current.chatLoading = loadingMsgs || sending;
@@ -678,7 +689,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
     try { await client.call('sessions.abort', { key: activeKey }); } catch { /* ignore */ }
   };
 
-  const handleNewSession = async () => {
+  const handleNewSession = useCallback(async () => {
     if (!client || agents.length === 0) return;
     try {
       const res = await client.call<{ key?: string; sessionKey?: string }>('sessions.create', {
@@ -690,7 +701,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : 'create failed');
     }
-  };
+  }, [client, agents, setActiveKey, refreshSessions]);
 
   // Persist open/closed per session; reload it when the active session changes.
   const setCanvasOpen = useCallback((v: boolean) => {
@@ -699,11 +710,21 @@ export default function Chat({ theme: _theme }: ChatProps) {
     try { localStorage.setItem(canvasOpenStorage(activeKey), v ? '1' : '0'); } catch { /* quota */ }
   }, [activeKey]);
 
-  useEffect(() => {
-    if (!activeKey) { setCanvasOpenState(false); return; }
-    try { setCanvasOpenState(localStorage.getItem(canvasOpenStorage(activeKey)) === '1'); }
-    catch { setCanvasOpenState(false); }
-  }, [activeKey]);
+  // Reload the persisted open/closed flag when the active session changes.
+  // Done during render (reset-on-dep-change) so the canvas doesn't flash its
+  // previous session's state for a frame on switch.
+  // `false` sentinel: must also run on first render so the initial session's
+  // persisted flag restores (canvasOpen's useState default is just `false`).
+  const [canvasOpenForKey, setCanvasOpenForKey] = useState<string | null | false>(false);
+  if (canvasOpenForKey !== activeKey) {
+    setCanvasOpenForKey(activeKey);
+    if (!activeKey) {
+      setCanvasOpenState(false);
+    } else {
+      try { setCanvasOpenState(localStorage.getItem(canvasOpenStorage(activeKey)) === '1'); }
+      catch { setCanvasOpenState(false); }
+    }
+  }
 
   // Persist width on change (cheap — it's a single integer).
   useEffect(() => {
@@ -796,7 +817,14 @@ export default function Chat({ theme: _theme }: ChatProps) {
     return matchSlashCommands(composer);
   }, [composer]);
   const [slashHover, setSlashHover] = useState(0);
-  useEffect(() => { setSlashHover(0); }, [slashMatches.length]);
+  // Reset the highlighted palette row whenever the match set size changes.
+  // Done during render (React's sanctioned reset-on-dep-change pattern) rather
+  // than in an effect, which would flash a stale highlight for one frame.
+  const [prevSlashMatchCount, setPrevSlashMatchCount] = useState(slashMatches.length);
+  if (prevSlashMatchCount !== slashMatches.length) {
+    setPrevSlashMatchCount(slashMatches.length);
+    setSlashHover(0);
+  }
 
   const runSlashIfApplicable = useCallback(async (input: string): Promise<boolean> => {
     if (!parseSlashInput(input)) return false;
@@ -945,6 +973,10 @@ export default function Chat({ theme: _theme }: ChatProps) {
   // The "only if new" guard inside seedCanvasFromSession protects saved edits.
   useEffect(() => {
     if (!canvasOpen || loadingMsgs) return;
+    // Syncs an external system (the canvas) to the thread's latest HTML; the
+    // setCanvasSeed inside is guarded by an "only if new" check and a
+    // localStorage write, so it can't move to render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- canvas/thread sync; see comment
     seedCanvasFromSession();
     // Intentionally not depending on seedCanvasFromSession/messages: we only
     // want this on session-switch / load-complete, not on every keystroke.
@@ -969,7 +1001,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
     if (!active?.model) return null;
     const wanted = active.model;
     return modelCatalog.find(m => m.id === wanted || m.alias === wanted) ?? null;
-  }, [active?.model, modelCatalog]);
+  }, [active, modelCatalog]);
   const contextMax = activeModelEntry?.contextWindow ?? 200_000;
   const contextUsed = active?.contextTokens ?? charEstimateTokens;
   const ctxPct = Math.min(100, (contextUsed / contextMax) * 100);
@@ -1121,9 +1153,8 @@ export default function Chat({ theme: _theme }: ChatProps) {
               </div>
             </div>
           )}
-          {(() => { void pinnedTick; return null; })()}
           {visibleMessages.map((m) => {
-            const isPinned = pinnedRef.current?.has(m.id) ?? false;
+            const isPinned = pinnedIds.has(m.id);
             const isTool = m.role === 'tool' || m.role === 'system';
             const avatarLabel = m.role === 'user' ? 'U' : isTool ? '🔧' : 'D';
             return (
@@ -1161,8 +1192,10 @@ export default function Chat({ theme: _theme }: ChatProps) {
                       <button
                         className="msg-pin"
                         onClick={() => {
-                          pinnedRef.current?.toggle(m.id);
-                          setPinnedTick(t => t + 1);
+                          if (!activeKey) return;
+                          const pinned = new PinnedMessages(activeKey);
+                          pinned.toggle(m.id);
+                          setPinnedIds(new Set(pinned.ids));
                         }}
                         title={isPinned ? 'Unpin' : 'Pin this message'}
                         style={{

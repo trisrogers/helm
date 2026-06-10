@@ -143,25 +143,27 @@ export default function Editor() {
     }
   }, [client, status, agentId]);
 
-  useEffect(() => { refreshFiles(); }, [refreshFiles]);
+  useEffect(() => { void (async () => { await refreshFiles(); })(); }, [refreshFiles]);
 
   /* fetch content when the active file (or its existence) changes. Deliberately
      NOT keyed on the whole `files` array: list refreshes/saves update metadata,
      and refetching then would clobber a dirty editor buffer. */
   const activeIsMissing = files?.find(f => f.name === activeFile)?.missing ?? false;
   useEffect(() => {
-    if (!client || status !== 'connected' || !agentId || !activeFile) {
-      setLoadedContent('');
-      return;
-    }
-    if (activeIsMissing) {
-      setLoadedContent('');
-      setDirty(false);
-      dirtyRef.current = false;
-      return;
-    }
     let cancelled = false;
     (async () => {
+      // No fetchable file (disconnected / nothing selected): clear the buffer.
+      if (!client || status !== 'connected' || !agentId || !activeFile) {
+        setLoadedContent('');
+        return;
+      }
+      // File exists in the list but isn't created yet: start from a clean slate.
+      if (activeIsMissing) {
+        setLoadedContent('');
+        setDirty(false);
+        dirtyRef.current = false;
+        return;
+      }
       try {
         const r = await client.call<FileGetResult>('agents.files.get', { agentId, name: activeFile });
         if (cancelled) return;

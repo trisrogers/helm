@@ -162,8 +162,9 @@ export default function Goals({ theme }: Props) {
   const [narrativeDraft, setNarrativeDraft] = useState('');
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
-  // Reload from storage on mount and whenever another screen mutates the store.
-  // Also re-anchor the selection if the active goal was deleted elsewhere.
+  // Reload from storage whenever another screen mutates the store, re-anchoring
+  // the selection if the active goal was deleted elsewhere. The initial load is
+  // handled by the useState initializers above, so no sync reload() on mount.
   useEffect(() => {
     const reload = () => {
       const gs = loadGoals();
@@ -172,7 +173,6 @@ export default function Goals({ theme }: Props) {
       setCommentary(loadCommentary());
       setActiveId(prev => (prev && gs.some(g => g.id === prev)) ? prev : gs[0]?.id ?? null);
     };
-    reload();
     return onStoreChange(reload);
   }, []);
 
@@ -181,9 +181,15 @@ export default function Goals({ theme }: Props) {
     [goals, activeId],
   );
 
-  useEffect(() => {
+  // Reset the narrative draft when the selected goal changes — keyed on the
+  // goal id, NOT its narrative, so saving the draft doesn't clobber edits. Done
+  // as a during-render reset (the React-sanctioned alternative to an effect).
+  // Initial `false` forces the reset on first render to seed from the goal.
+  const [draftGoalId, setDraftGoalId] = useState<string | null | false>(false);
+  if ((active?.id ?? null) !== draftGoalId) {
+    setDraftGoalId(active?.id ?? null);
     setNarrativeDraft(active?.narrative ?? '');
-  }, [active?.id]);
+  }
 
   const goalTasks = active ? tasksForGoal(active.id, tasks) : [];
   const activeCommentary = active ? commentaryFor({ goalId: active.id }, commentary) : [];

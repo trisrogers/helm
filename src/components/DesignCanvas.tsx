@@ -125,6 +125,18 @@ function loadLegacyVersions(): DesignVersion[] {
   } catch { return []; }
 }
 
+/** The one-time legacy import offer for this canvas: surface the old global
+ *  versions only if this canvas has never been migrated and has none of its own.
+ *  Computed at mount (the component is keyed by storageId, so it remounts when
+ *  the canvas changes) rather than synced via an effect. */
+function initialLegacyOffer(storageId: string, ownVersions: DesignVersion[]): DesignVersion[] {
+  try {
+    if (localStorage.getItem(migratedKey(storageId))) return [];
+  } catch { return []; }
+  if (ownVersions.length > 0) return [];
+  return loadLegacyVersions();
+}
+
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'design';
 }
@@ -177,12 +189,14 @@ export default function DesignCanvas({ storageId, seedHTML, seedLabel, onClose, 
   const [labelDraft, setLabelDraft] = useState('');
   const [autoPreview, setAutoPreview] = useState(true);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [legacyOffer, setLegacyOffer] = useState<DesignVersion[]>([]);
+  const [legacyOffer, setLegacyOffer] = useState<DesignVersion[]>(
+    () => initialLegacyOffer(storageId, initial.versions),
+  );
 
   const editorParentRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const contentRef = useRef(content);
-  contentRef.current = content;
+  useEffect(() => { contentRef.current = content; });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appliedSeedRef = useRef<string | null>(null);
 
@@ -263,19 +277,6 @@ export default function DesignCanvas({ storageId, seedHTML, seedLabel, onClose, 
     const p = persistRef.current;
     saveCanvasState(p.storageId, { content: p.content, versions: p.versions, activeId: p.activeId });
   }, []);
-
-  // One-time legacy import offer: if this canvas has never been migrated and
-  // has no versions of its own, surface the old global versions for import.
-  useEffect(() => {
-    try {
-      if (localStorage.getItem(migratedKey(storageId))) return;
-    } catch { return; }
-    if (versions.length > 0) return;
-    const legacy = loadLegacyVersions();
-    if (legacy.length > 0) setLegacyOffer(legacy);
-    // versions intentionally read once at mount-time intent; storageId drives re-check.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageId]);
 
   const dismissLegacy = useCallback(() => {
     try { localStorage.setItem(migratedKey(storageId), '1'); } catch { /* quota */ }

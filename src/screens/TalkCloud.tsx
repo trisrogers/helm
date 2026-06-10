@@ -32,14 +32,22 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   const { client, status: gw } = useGateway();
   const { connect, disconnect, status, messages, micFft, isMuted, mute, unmute, error, sendAssistantInput } = useVoice();
   // Latest sendAssistantInput, so the (memoized) bridge can stream the agent's
-  // reply into EVI's voice without being rebuilt each render.
+  // reply into EVI's voice without being rebuilt each render. Synced in an
+  // effect (post-commit) — onSpeak only reads it from a bridge callback.
   const speakRef = useRef(sendAssistantInput);
-  speakRef.current = sendAssistantInput;
+  useEffect(() => { speakRef.current = sendAssistantInput; });
   const [agentId, setAgentId] = useState<string | null>(null);
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const toolSeq = useRef(0);
+
+  // Stable callbacks the bridge holds; both read refs at call time, not render,
+  // so the bridge isn't rebuilt when sendAssistantInput changes each render.
+  const speak = useCallback((text: string) => { speakRef.current?.(text); }, []);
+  const pushTool = useCallback((e: Omit<ToolEntry, 'id'>) => {
+    setTools((prev) => [{ id: ++toolSeq.current, ...e }, ...prev].slice(0, 12));
+  }, []);
 
   const configId = EVI_CONFIG_BY_THEME[theme];
   const agentName = AGENT_NAME[theme];
@@ -55,11 +63,15 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   // One bridge per (client, agent). Publish its handler to the ref VoiceProvider reads.
   const bridge = useMemo(() => {
     if (!client || !agentId) return null;
+    // speak/pushTool are stable callbacks that read refs only at call time; the
+    // rule flags them escaping into the long-lived bridge, but reading at call
+    // time is the point — it keeps the bridge from rebuilding each render.
+    // eslint-disable-next-line react-hooks/refs
     return new OpenclawVoiceBridge(client, agentId, {
-      onTool: (e) => setTools((prev) => [{ id: ++toolSeq.current, ...e }, ...prev].slice(0, 12)),
-      onSpeak: (text) => speakRef.current?.(text),
+      onTool: pushTool,
+      onSpeak: speak,
     });
-  }, [client, agentId]);
+  }, [client, agentId, speak, pushTool]);
   useEffect(() => {
     bridgeRef.current = bridge?.onToolCall ?? null;
     return () => { bridge?.dispose(); };
@@ -76,7 +88,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   // doesn't greet on connect, so reconnects are seamless.
   const [wantOn, setWantOn] = useState(false);
   const wantOnRef = useRef(wantOn);
-  wantOnRef.current = wantOn;
+  useEffect(() => { wantOnRef.current = wantOn; });
   const [gaveUp, setGaveUp] = useState(false);
   const retries = useRef(0);
   const reTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -100,7 +112,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   // reconnect effect depending on start's identity (which changes every status
   // transition because voice-react's connect does).
   const startRef = useRef(start);
-  startRef.current = start;
+  useEffect(() => { startRef.current = start; });
 
   // Explicit stop (End / mic toggle-off / unmount): clear intent + pending retry.
   const stop = useCallback(() => {
@@ -128,7 +140,7 @@ function Inner({ theme, mode, onModeChange, bridgeRef }: Props & {
   // fires ONLY on unmount — depending on [disconnect] would re-run every render
   // (voice-react returns a fresh disconnect each time) and spin into a loop.
   const disconnectRef = useRef(disconnect);
-  disconnectRef.current = disconnect;
+  useEffect(() => { disconnectRef.current = disconnect; });
   useEffect(() => () => { wantOnRef.current = false; disconnectRef.current().catch(() => {}); }, []);
 
   const transcript = useMemo(

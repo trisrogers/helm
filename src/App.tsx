@@ -275,8 +275,19 @@ function useDefaultModel(): DefaultModelInfo | null {
   const { client, status, snapshot } = useGateway();
   const [info, setInfo] = useState<DefaultModelInfo | null>(null);
   const defaultAgentId = snapshot?.sessionDefaults?.defaultAgentId;
+
+  // Clear the cached model during render when the gateway drops, instead of a
+  // synchronous setState in the fetch effect below. prevConnected is tracked in
+  // state (not a ref) so the render-time reset stays within the rules.
+  const connected = !!client && status === 'connected';
+  const [prevConnected, setPrevConnected] = useState(connected);
+  if (prevConnected !== connected) {
+    setPrevConnected(connected);
+    if (!connected) setInfo(null);
+  }
+
   useEffect(() => {
-    if (!client || status !== 'connected') { setInfo(null); return; }
+    if (!client || status !== 'connected') return;
     let cancelled = false;
     client.call<{ agents: Array<{ id: string; name?: string; identity?: { name?: string }; model?: { primary?: string } }>; defaultId?: string }>('agents.list')
       .then(r => {

@@ -147,7 +147,7 @@ export default function Overview() {
 
   useEffect(() => {
     if (!client || status !== 'connected') return;
-    fetchAll();
+    void (async () => { await fetchAll(); })();
 
     const unsubs = [
       client.on('sessions.changed', fetchAll),

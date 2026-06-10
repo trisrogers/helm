@@ -101,7 +101,7 @@ function buildCommEdges(sessions: SessionRow[]): CommEdge[] {
   return Object.values(acc);
 }
 
-function CommGraph({ agents, edges }: { agents: AgentRow[]; edges: CommEdge[] }) {
+function CommGraph({ agents, edges, now }: { agents: AgentRow[]; edges: CommEdge[]; now: number }) {
   // Lay nodes around a circle so edges have somewhere to live
   const w = 600, h = 220, cx = w / 2, cy = h / 2;
   const r = Math.min(w, h) / 2 - 36;
@@ -135,7 +135,7 @@ function CommGraph({ agents, edges }: { agents: AgentRow[]; edges: CommEdge[] })
           const a = positions[e.fromAgent];
           const b = positions[e.toAgent];
           if (!a || !b) return null;
-          const recent = e.recentMs ? Date.now() - e.recentMs < 5 * 60_000 : false;
+          const recent = e.recentMs ? now - e.recentMs < 5 * 60_000 : false;
           // Shorten the line so the arrowhead doesn't sit inside the node circle
           const dx = b.x - a.x, dy = b.y - a.y;
           const len = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -202,8 +202,7 @@ function CommGraph({ agents, edges }: { agents: AgentRow[]; edges: CommEdge[] })
 
 /* ── timeline ────────────────────────────────────────────── */
 
-function Timeline({ agents, activity }: { agents: AgentRow[]; activity: ActivityEvent[] }) {
-  const now = Date.now();
+function Timeline({ agents, activity, now }: { agents: AgentRow[]; activity: ActivityEvent[]; now: number }) {
   const cutoff = now - TIMELINE_WINDOW_MS;
   const recent = activity.filter(a => a.ts >= cutoff);
 
@@ -275,11 +274,14 @@ export default function Orch() {
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  // Ticked every 30s so relative timestamps + the 2h window stay fresh without
+  // an impure Date.now() call in the render path.
+  const [now, setNow] = useState(() => Date.now());
   // Latest sessions for the event callback, so the subscription effect doesn't
   // depend on `sessions` (which would tear down/re-register the listener on
   // every event and leave the callback reading a stale snapshot).
   const sessionsRef = useRef<SessionRow[]>([]);
-  sessionsRef.current = sessions;
+  useEffect(() => { sessionsRef.current = sessions; });
 
   const refresh = useCallback(async () => {
     if (!client || status !== 'connected') return;
@@ -297,7 +299,7 @@ export default function Orch() {
 
   useEffect(() => {
     if (!client || status !== 'connected') return;
-    refresh();
+    void (async () => { await refresh(); })();
     const off = client.on('sessions.changed', (payload) => {
       const p = payload as { sessionKey?: string; phase?: string; ts?: number };
       if (!p?.sessionKey) return;
@@ -310,16 +312,20 @@ export default function Orch() {
       refresh();
     });
 
-    // Tick state every 30s so relative timestamps + the 2h window stay fresh
-    const interval = setInterval(() => setActivity(prev => prev.slice()), 30_000);
+    // Tick `now` every 30s so relative timestamps + the 2h window stay fresh
+    const interval = setInterval(() => setNow(Date.now()), 30_000);
 
     return () => { off(); clearInterval(interval); };
   }, [client, status, refresh]);
 
-  // Seed: also infer activity from initial sessions list (one event per recent session)
-  useEffect(() => {
-    if (sessions.length === 0) return;
-    const cutoff = Date.now() - TIMELINE_WINDOW_MS;
+  // Seed: also infer activity from the sessions list (one event per recent
+  // session), merging into whatever live events have already accumulated.
+  // Done as a during-render adjustment keyed on the `sessions` reference so it
+  // runs once per new list without an effect's cascading setState.
+  const [seededFrom, setSeededFrom] = useState<SessionRow[] | null>(null);
+  if (sessions.length > 0 && seededFrom !== sessions) {
+    setSeededFrom(sessions);
+    const cutoff = now - TIMELINE_WINDOW_MS;
     const seeded: ActivityEvent[] = sessions
       .filter(s => s.updatedAt && s.updatedAt >= cutoff)
       .map(s => ({
@@ -337,7 +343,7 @@ export default function Orch() {
       }
       return merged.sort((a, b) => a.ts - b.ts).slice(-ACTIVITY_BUFFER_MAX);
     });
-  }, [sessions]);
+  }
 
   const agentSessions = useMemo(() => {
     const g: Record<string, SessionRow[]> = {};
@@ -400,12 +406,12 @@ export default function Orch() {
 
       <div>
         <div className="card-title" style={{ marginBottom: '8px' }}>Agent Communication Graph</div>
-        <CommGraph agents={agents} edges={edges} />
+        <CommGraph agents={agents} edges={edges} now={now} />
       </div>
 
       <div>
         <div className="card-title" style={{ marginBottom: '8px' }}>Session Timeline (last 2h)</div>
-        <Timeline agents={agents} activity={activity} />
+        <Timeline agents={agents} activity={activity} now={now} />
         <div style={{ display: 'flex', gap: '12px', marginTop: '6px', fontSize: '9px', color: 'var(--ink2)' }}>
           <span><span className="tl-ev tl-ev-msg" style={{ display: 'inline-block', verticalAlign: 'middle' }} /> Message</span>
           <span><span className="tl-ev tl-ev-tool" style={{ display: 'inline-block', verticalAlign: 'middle' }} /> Tool / exec</span>

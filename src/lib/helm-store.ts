@@ -13,6 +13,14 @@
 export type TaskStatus = 'backlog' | 'in_progress' | 'review' | 'done';
 export type Priority = 'low' | 'medium' | 'high';
 
+/** Kanban columns in display order, keyed by task status. */
+export const TASK_COLUMNS: Array<{ id: TaskStatus; label: string }> = [
+  { id: 'backlog', label: 'Backlog' },
+  { id: 'in_progress', label: 'In Progress' },
+  { id: 'review', label: 'Review' },
+  { id: 'done', label: 'Done' },
+];
+
 export interface Task {
   id: string;
   title: string;

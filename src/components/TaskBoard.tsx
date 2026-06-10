@@ -9,19 +9,13 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  TASK_COLUMNS,
   type Task,
   type TaskStatus,
   type Priority,
   type Goal,
   type CommentaryEntry,
 } from '../lib/helm-store';
-
-export const TASK_COLUMNS: Array<{ id: TaskStatus; label: string }> = [
-  { id: 'backlog', label: 'Backlog' },
-  { id: 'in_progress', label: 'In Progress' },
-  { id: 'review', label: 'Review' },
-  { id: 'done', label: 'Done' },
-];
 
 const PRIORITY_PILL: Record<Priority, { cls: string; text: string }> = {
   high: { cls: 'pill-err', text: 'High' },
@@ -93,7 +87,13 @@ export function TaskDetailModal({
   const [feedback, setFeedback] = useState('');
   const [note, setNote] = useState('');
 
-  useEffect(() => setDraft(task), [task.id, task]);
+  // Reset the draft during render when a fresh task is passed in, instead of
+  // syncing it from an effect.
+  const [prevTask, setPrevTask] = useState(task);
+  if (prevTask !== task) {
+    setPrevTask(task);
+    setDraft(task);
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };

@@ -128,7 +128,7 @@ export default function Skills() {
     }
   }, [client, status]);
 
-  useEffect(() => { fetchReport(); }, [fetchReport]);
+  useEffect(() => { void (async () => { await fetchReport(); })(); }, [fetchReport]);
 
   const runSearch = useCallback(async (q: string) => {
     if (!client || status !== 'connected') return;
@@ -150,7 +150,7 @@ export default function Skills() {
   // Auto-run a blank search on first tab switch so the grid isn't empty
   useEffect(() => {
     if (tab === 'browse' && searchResults === null && status === 'connected') {
-      runSearch('');
+      void (async () => { await runSearch(''); })();
     }
   }, [tab, searchResults, status, runSearch]);
 
@@ -158,9 +158,9 @@ export default function Skills() {
   useEffect(() => {
     if (!client || status !== 'connected' || !selectedSlug || tab !== 'browse') return;
     let cancelled = false;
-    setDetailLoading(true);
-    setDetail(null);
     (async () => {
+      setDetailLoading(true);
+      setDetail(null);
       try {
         const r = await client.call<ClawHubDetail>('skills.detail', { slug: selectedSlug });
         if (!cancelled) setDetail(r);

@@ -21,7 +21,11 @@ export default defineConfig({
   // spike config, which connected fine.
   optimizeDeps: { include: ['react', 'react-dom', '@humeai/voice-react'] },
   server: {
-    host: true,
+    // Loopback only: the dev bundle inlines the spendable Hume API key, so the
+    // dev server must not listen on the LAN. Tailnet access goes through the
+    // persistent serve rule (tailscale serve --bg --https=5173
+    // https+insecure://127.0.0.1:5173) → https://vostok-wsl.tail3aeb2d.ts.net:5173
+    host: '127.0.0.1',
     allowedHosts: ['.tail3aeb2d.ts.net', 'vostok-wsl'],
     proxy: {
       '/ws-gateway': {

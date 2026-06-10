@@ -26,6 +26,11 @@ export default defineConfig({
     // persistent serve rule (tailscale serve --bg --https=5173
     // https+insecure://127.0.0.1:5173) → https://vostok-wsl.tail3aeb2d.ts.net:5173
     host: '127.0.0.1',
+    // tailscaled now holds :5173 on the tailnet IPs (the dev serve rule), which
+    // trips vite's availability probe — without strictPort it silently bumps to
+    // :5175 and the serve mapping (and HMR) break.
+    port: 5173,
+    strictPort: true,
     allowedHosts: ['.tail3aeb2d.ts.net', 'vostok-wsl'],
     proxy: {
       '/ws-gateway': {

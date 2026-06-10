@@ -4,6 +4,12 @@ import { useGateway } from '../context/GatewayContext';
 import { navigateTo, extractHTMLFromAssistantText } from '../lib/handoff';
 import DesignCanvas from '../components/DesignCanvas';
 import {
+  buildCanvasDirective,
+  splitCanvasBlocks,
+  stripCanvasContext,
+} from '../lib/chat/canvas-block';
+import { loadCanvasDoc } from '../lib/design-canvas-storage';
+import {
   createChatModelOverride,
   type ChatModelOverride,
 } from '../lib/chat/chat-model-ref';
@@ -647,6 +653,21 @@ export default function Chat({ theme: _theme }: ChatProps) {
     inputHistoryStateRef.current.chatMessages = messages;
   }, [activeKey, loadingMsgs, sending, composer, messages]);
 
+  // Most recent assistant HTML in the thread (if any). Walks back so a
+  // trailing "Done!" reply doesn't shadow the HTML message. A [canvas] block
+  // (CR-002 protocol) beats fence/doc sniffing; streaming messages are skipped
+  // so a half-arrived document never reaches the canvas. Declared before
+  // handleSend (which captures it) so the compiler can preserve the memo.
+  const latestAssistantHtml = useMemo((): string | null => {
+    let found: string | null = null;
+    for (let i = messages.length - 1; i >= 0 && !found; i--) {
+      const m = messages[i];
+      if (m.role !== 'assistant' || m.streaming) continue;
+      found = splitCanvasBlocks(m.text).html ?? extractHTMLFromAssistantText(m.text);
+    }
+    return found;
+  }, [messages]);
+
   const handleSend = async () => {
     const text = composer.trim();
     if (!text || !client || !activeKey || sending) return;
@@ -663,16 +684,26 @@ export default function Chat({ theme: _theme }: ChatProps) {
     setSending(true);
     setErrorMsg(null);
     recordNonTranscriptInputHistory(inputHistoryStateRef.current, text);
+    // CR-002: with the canvas open, append the Helm canvas guideline so the
+    // model replies with a complete doc in [canvas] tags. The current canvas
+    // doc rides along only when it differs from the model's own latest HTML
+    // (i.e. the user hand-edited it in the editor). The directive is stripped
+    // from bubbles at render time (stripCanvasContext).
+    let outbound = text;
+    if (canvasOpen) {
+      const doc = loadCanvasDoc(activeKey);
+      outbound = `${text}\n\n${buildCanvasDirective(doc && doc !== latestAssistantHtml ? doc : null)}`;
+    }
     // Optimistic insert so the user's message appears immediately. The real
     // echo from session.message will replace this row (matched by text in
-    // the session.message handler above).
+    // the session.message handler above — hence the full outbound text here).
     const optimisticId = `local:user:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const ts = Date.now();
-    setMessages(prev => [...prev, { id: optimisticId, role: 'user', text, ts }]);
+    setMessages(prev => [...prev, { id: optimisticId, role: 'user', text: outbound, ts }]);
     setComposer('');
     resetChatInputHistoryNavigation(inputHistoryStateRef.current);
     try {
-      const resp = await client.call<{ runId?: string }>('sessions.send', { key: activeKey, message: text });
+      const resp = await client.call<{ runId?: string }>('sessions.send', { key: activeKey, message: outbound });
       if (resp?.runId) setPendingRunId(resp.runId);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : 'send failed');
@@ -932,18 +963,6 @@ export default function Chat({ theme: _theme }: ChatProps) {
 
   const active = activeKey ? sessions?.find(s => s.key === activeKey) ?? null : null;
 
-  // Most recent assistant HTML in the thread (if any). Walks back so a
-  // trailing "Done!" reply doesn't shadow the HTML message.
-  const latestSessionHTML = useCallback((): string | null => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role !== 'assistant') continue;
-      const found = extractHTMLFromAssistantText(m.text);
-      if (found) return found;
-    }
-    return null;
-  }, [messages]);
-
   // Seed the canvas from the latest assistant HTML in the active session.
   //  - force (explicit "Open in Canvas"): always seed when HTML exists.
   //  - plain open (Canvas toggle): only seed when the latest HTML differs from
@@ -951,7 +970,7 @@ export default function Chat({ theme: _theme }: ChatProps) {
   //    user's saved edits when no newer HTML has arrived.
   const seedCanvasFromSession = useCallback((force = false) => {
     if (!activeKey) return;
-    const html = latestSessionHTML();
+    const html = latestAssistantHtml;
     if (!html) return;
     let lastSeed: string | null = null;
     try { lastSeed = localStorage.getItem(canvasLastSeedStorage(activeKey)); } catch { /* ignore */ }
@@ -959,7 +978,18 @@ export default function Chat({ theme: _theme }: ChatProps) {
     const label = active?.displayName ?? active?.derivedTitle ?? activeKey;
     setCanvasSeed({ key: activeKey, html, label: `Chat session: ${label}` });
     try { localStorage.setItem(canvasLastSeedStorage(activeKey), html); } catch { /* quota */ }
-  }, [activeKey, latestSessionHTML, active]);
+  }, [activeKey, latestAssistantHtml, active]);
+
+  // Pump a specific message's design doc into the canvas (the "design doc"
+  // chip on a chat bubble). Recorded as the last seed so the auto-sync above
+  // doesn't immediately re-clobber it with a newer thread doc.
+  const openCanvasWithHtml = useCallback((html: string) => {
+    if (!activeKey) return;
+    const label = active?.displayName ?? active?.derivedTitle ?? activeKey;
+    setCanvasSeed({ key: activeKey, html, label: `Chat session: ${label}` });
+    try { localStorage.setItem(canvasLastSeedStorage(activeKey), html); } catch { /* quota */ }
+    setCanvasOpen(true);
+  }, [activeKey, active, setCanvasOpen]);
 
   // Open the canvas, picking up the latest session HTML as it opens.
   const openCanvasWithLatestHTML = useCallback(() => {
@@ -967,10 +997,11 @@ export default function Chat({ theme: _theme }: ChatProps) {
     setCanvasOpen(true);
   }, [seedCanvasFromSession, setCanvasOpen]);
 
-  // If the canvas is already open (persisted) when we switch into / finish
-  // loading a session, pick up its latest HTML too — otherwise the canvas
-  // would sit on its default placeholder despite HTML being in the thread.
-  // The "only if new" guard inside seedCanvasFromSession protects saved edits.
+  // Keep an open canvas in sync with the thread: on session-switch /
+  // load-complete AND whenever a new complete assistant doc lands (CR-002 —
+  // the iterate loop: ask in chat, canvas updates in place). The "only if
+  // new" guard inside seedCanvasFromSession protects saved edits from
+  // re-seeding the same doc.
   useEffect(() => {
     if (!canvasOpen || loadingMsgs) return;
     // Syncs an external system (the canvas) to the thread's latest HTML; the
@@ -978,10 +1009,10 @@ export default function Chat({ theme: _theme }: ChatProps) {
     // localStorage write, so it can't move to render.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- canvas/thread sync; see comment
     seedCanvasFromSession();
-    // Intentionally not depending on seedCanvasFromSession/messages: we only
-    // want this on session-switch / load-complete, not on every keystroke.
+    // Depending on latestAssistantHtml (not seedCanvasFromSession/messages)
+    // re-runs this exactly when a new completed doc arrives, not per keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey, canvasOpen, loadingMsgs]);
+  }, [activeKey, canvasOpen, loadingMsgs, latestAssistantHtml]);
 
   // Context-usage bar.
   //
@@ -1157,14 +1188,33 @@ export default function Chat({ theme: _theme }: ChatProps) {
             const isPinned = pinnedIds.has(m.id);
             const isTool = m.role === 'tool' || m.role === 'system';
             const avatarLabel = m.role === 'user' ? 'U' : isTool ? '🔧' : 'D';
+            // CR-002: design docs travel inside [canvas] blocks — pump them
+            // into the canvas, not the transcript. User bubbles hide the
+            // appended [canvas-context] directive the same way.
+            const split = m.role === 'assistant' ? splitCanvasBlocks(m.text) : null;
+            const displayText = m.role === 'user' ? stripCanvasContext(m.text) : split ? split.visible : m.text;
+            const canvasHtml = split?.html ?? null;
             return (
               <div key={m.id} className={`msg ${m.role === 'user' ? 'user' : ''} ${isPinned ? 'pinned' : ''} ${isTool ? 'tool' : ''}`}>
                 <div className="msg-avatar">{avatarLabel}</div>
                 <div>
-                  {m.text && (
+                  {displayText && (
                     <div className="msg-body" style={{ whiteSpace: 'pre-wrap', opacity: isTool ? 0.75 : 1, fontFamily: isTool ? 'var(--fm)' : undefined, fontSize: isTool ? '11px' : undefined }}>
-                      {m.text}
-                      {m.streaming && <span className="streaming-cursor" />}
+                      {displayText}
+                      {m.streaming && !split?.pending && <span className="streaming-cursor" />}
+                    </div>
+                  )}
+                  {canvasHtml && (
+                    <button
+                      className="btn"
+                      style={{ marginTop: '4px', padding: '4px 10px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                      onClick={() => openCanvasWithHtml(canvasHtml)}
+                      title="Open this design document in the canvas"
+                    >⬚ Design doc <span style={{ color: 'var(--ink2)' }}>{(canvasHtml.length / 1024).toFixed(1)} KB — open in canvas</span></button>
+                  )}
+                  {split?.pending && (
+                    <div style={{ marginTop: '4px', padding: '4px 10px', fontSize: '11px', color: 'var(--ink2)', fontFamily: 'var(--fm)' }}>
+                      ⬚ drafting design doc… <span className="streaming-cursor" />
                     </div>
                   )}
                   {m.toolCalls?.map((tc, i) => (
